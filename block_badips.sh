@@ -177,4 +177,4 @@ else
 fi
 
 ### end of script
-$LOGGER_BIN $LOGGER_OPTS "finished applying iptable rules"
+$LOGGER_BIN $LOGGER_OPTS "Finished applying iptables rules"
