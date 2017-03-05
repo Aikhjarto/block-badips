@@ -5,8 +5,11 @@ PartOf=SuSEfirewall2.service
 # must not run in parallel to service that modify iptables without "-w"
 Before=fail2ban.service
 Before=libvirtd.service
+After=network.target
 
 [Service]
 Type=oneshot
 ExecStart=/usr/sbin/block_badips.sh
 
+[Install]
+WantedBy=multi-user.target
