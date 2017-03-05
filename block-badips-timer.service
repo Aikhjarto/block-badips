@@ -1,0 +1,8 @@
+[Unit]
+Description=Block Badips Script
+Wanter=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/block_badips.sh
+

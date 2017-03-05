@@ -1,0 +1,12 @@
+[Unit]
+Description=Applies iptables rules to block known IPs doing nasty stuff"
+Documentation=https://badips.com
+PartOf=SuSEfirewall2.service
+# must not run in parallel to service that modify iptables without "-w"
+Before=fail2ban.service
+Before=libvirtd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/block_badips.sh
+

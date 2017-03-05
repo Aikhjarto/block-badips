@@ -1,0 +1,10 @@
+[Unit]
+Description=Runs Block Badips periodically
+
+[Timer]
+OnUnitActiveSec=1h
+Unit=block-badips-timer.service
+
+[Install]
+WantedBy=multi-user.target
+
