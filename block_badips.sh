@@ -65,6 +65,7 @@ fi
 if [ ! -s $FILE ]; then
 	# file does not exist or is empty
 	$LOGGER_BIN $LOGGER_OPTS -s "ERROR: $URL sent empty or no file"
+	exit 1
 elif grep -q -i HTML $FILE; then
 	# if there was a problem, sometimes a HTML file containing an error message is sent
 	$LOGGER_BIN $LOGGER_OPTS -s "ERROR: $URL sent unparseable file"

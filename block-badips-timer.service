@@ -1,8 +1,8 @@
 [Unit]
-Description=Block Badips Script
-Wanter=network-online.target
+Description=Timer service for running block badips script periodically
+After=network.target
 
 [Service]
-Type=simple
+Type=oneshot
 ExecStart=/usr/sbin/block_badips.sh
 
