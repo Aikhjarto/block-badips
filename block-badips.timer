@@ -2,7 +2,8 @@
 Description=Runs Block Badips periodically
 
 [Timer]
-OnActiveSec=1h
+OnBoosSec=1h
+OnUnitActiveSec=1h
 Unit=block-badips-timer.service
 
 [Install]
