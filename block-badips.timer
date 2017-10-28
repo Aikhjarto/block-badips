@@ -2,7 +2,7 @@
 Description=Runs Block Badips periodically
 
 [Timer]
-OnBoosSec=1h
+OnBootSec=1h
 OnUnitActiveSec=1h
 Unit=block-badips-timer.service
 

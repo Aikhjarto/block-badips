@@ -47,12 +47,12 @@ FILE=$(mktemp -t block_badips.new.XXXXXX)
 trap "rm -f $FILE" INT TERM EXIT
 # Try curl or wget to download.
 if type curl >/dev/null; then
-	curl -s $URL > "$FILE"
+	r=$(curl -s $URL > "$FILE")
 elif type wget >/dev/null; then 
-	wget -q -O $FILE $URL 
+	r=$(wget -q -O "$FILE" "$URL")
 fi
 if [ $? -ne 0 ]; then
-	$LOGGER_BIN $LOGGER_OPTS -s "ERROR: download of $URL failed"
+	$LOGGER_BIN $LOGGER_OPTS -s "ERROR: download of $URL failed with exit code $? and message ${r}"
 	exit 1
 else
 	$LOGGER_BIN $LOGGER_OPTS "Got "$(wc -l < "$FILE" ) " IPs"
