@@ -55,7 +55,7 @@ if [ $? -ne 0 ]; then
 	$LOGGER_BIN $LOGGER_OPTS -s "ERROR: download of $URL failed with exit code $? and message ${r}"
 	exit 1
 else
-	$LOGGER_BIN $LOGGER_OPTS "Got "$(wc -l < "$FILE" ) " IPs"
+	$LOGGER_BIN $LOGGER_OPTS "Got "$(wc -l < "$FILE" ) " lines"
 fi
 
 ### input check
@@ -68,7 +68,7 @@ if [ ! -s $FILE ]; then
 	exit 1
 elif grep -q -i HTML $FILE; then
 	# if there was a problem, sometimes a HTML file containing an error message is sent
-	$LOGGER_BIN $LOGGER_OPTS -s "ERROR: $URL sent unparseable file"
+	$LOGGER_BIN $LOGGER_OPTS -s "ERROR: $URL got HTML file instead of text file"
 	# uncomment mail for debugging, productive script shouldn't depend on mail
 	# mail -s "add badips error" root < "$FILE"
 	exit 1
