@@ -31,8 +31,10 @@ IPTABLES_SAVE_BIN=/usr/sbin/iptables-save
 LOGGER_BIN=/usr/bin/logger
 IPSET_BIN=/usr/sbin/ipset
 
-type "$IPTABLES_BIN" >/dev/null 2>&1 || { echo >&2 "$IPTABLES_BIN not found.  Aborting."; exit 1; }
-type "$IPTABLES_SAVE_BIN"  >/dev/null 2>&1 || { echo >&2 "$IPTABLES_SAVE_BIN not found.  Aborting."; exit 1; }
+if ( [ ! -x $IPSET_BIN ] ) && ( [ ! -x $IPTABLES_BIN ] || [ ! -x $IPTABLES_SAVE_BIN ] ); then
+	echo >&2 "Either ipset or iptables and iptables-save must be available"
+fi
+
 type "$LOGGER_BIN"  >/dev/null 2>&1 || { echo >&2 "$LOGGER_BIN not found.  Aborting."; exit 1; }
 
 LOGGER_OPTS="-t block_badips"
@@ -75,6 +77,7 @@ elif grep -q -i HTML $FILE; then
 elif grep -v -q -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' $FILE; then
 	# something else than an IP is found
 	$LOGGER_BIN $LOGGER_OPTS -s "ERROR: $URL contained something else than a list of IPv4 addresses"
+	echo $FILE | mailx -s "badip erronous file" root
 	exit 1
 fi
 # assert: $FILE contains a single ipv4 adresses in each line
