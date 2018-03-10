@@ -6,6 +6,8 @@
 # The iptables rules are updated every time this script is executed. Additionally this script is
 # quiet on stdout, which makes it well suited for being executed as a cronjob.
 # This script uses ipset when available.
+# If /etc/block-badips.whitelist exits, IPv4 adresses, standing in lines containing nothing else
+# than a single IPv4 address, are never blocked.
 # 
 # Please also use fail2ban with the badips modification and help to maintain the list of attackers.
 # See also: fail2ban and http:///www.badips.com
@@ -17,9 +19,6 @@
 #	* logger
 #	* mktemp, wc, sed, grep, sort, comm
 #
-# TODO: personal white-list
-#	* remove entries in white-list from $NEW_IPS prior adding
-#	* add to $OLD_IPS (don't add entries that are not already in OLD_IPS)
 
 set -o nounset
 set -o errexit
@@ -30,6 +29,7 @@ IPTABLES_BIN=/usr/sbin/iptables
 IPTABLES_SAVE_BIN=/usr/sbin/iptables-save
 LOGGER_BIN=/usr/bin/logger
 IPSET_BIN=/usr/sbin/ipset
+WHITELIST_FILE=/etc/block-badips.whitelist
 
 if ( [ ! -x $IPSET_BIN ] ) && ( [ ! -x $IPTABLES_BIN ] || [ ! -x $IPTABLES_SAVE_BIN ] ); then
 	echo >&2 "Either ipset or iptables and iptables-save must be available"
@@ -81,6 +81,11 @@ elif grep -v -q -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' $FILE; then
 	exit 1
 fi
 # assert: $FILE contains a single ipv4 adresses in each line
+
+# remove IPs from whitelist file
+if [ -s ${WHITELIST_FILE} ]; then
+	comm -3 <(sort ${FILE}) <(grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' ${WHILELIST_FILE}) > ${FILE}
+fi
 
 ### main part
 if [ -x $IPSET_BIN ]; then

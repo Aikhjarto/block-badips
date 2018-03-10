@@ -1,0 +1,6 @@
+# whitelist file for block-backip
+#
+# each IPv4 adress which is in a separate line will never be blocked by 
+# block_badips.sh, even it is on a blacklist.
+127.0.0.1
+
