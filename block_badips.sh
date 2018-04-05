@@ -8,6 +8,7 @@
 # This script uses ipset when available.
 # If /etc/block-badips.whitelist exits, IPv4 adresses, standing in lines containing nothing else
 # than a single IPv4 address, are never blocked.
+# HTTP 504 errors are ignored up to MAX_N_ERROR times.
 # 
 # Please also use fail2ban with the badips modification and help to maintain the list of attackers.
 # See also: fail2ban and http:///www.badips.com
@@ -30,6 +31,8 @@ IPTABLES_SAVE_BIN=/usr/sbin/iptables-save
 LOGGER_BIN=/usr/bin/logger
 IPSET_BIN=/usr/sbin/ipset
 WHITELIST_FILE=/etc/block-badips.whitelist
+STATUS_FILE=/tmp/block-badips.status
+MAX_N_ERROR=10
 
 if ( [ ! -x $IPSET_BIN ] ) && ( [ ! -x $IPTABLES_BIN ] || [ ! -x $IPTABLES_SAVE_BIN ] ); then
 	echo >&2 "Either ipset or iptables and iptables-save must be available"
@@ -73,6 +76,17 @@ elif grep -q -i HTML $FILE; then
 	$LOGGER_BIN $LOGGER_OPTS -s "ERROR: $URL got HTML file instead of text file"
 	# uncomment mail for debugging, productive script shouldn't depend on mail
 	# mail -s "add badips error" root < "$FILE"
+	if grep -q "<head><title>504 Gateway Time-out</title></head>" $FILE; then
+		$LOGGER_BIN $LOGGER_OPTS -s "$URL cannot be fetched because of 504 Gateway Time-out"
+		echo $(date -Is) - ERROR 504 >> ${STATUS_FILE}
+		N_ERROR=$(cat $FILE | wc -l) 
+		if  [ $N_ERROR -gt $MAX_N_ERROR ]; then
+			$LOGGER_BIN $LOGGER_OPTS -s "Error 504 raised $N_ERROR times in a row!"
+			exit 1
+		else
+			exit 0
+		fi
+	fi
 	exit 1
 elif grep -v -q -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' $FILE; then
 	# something else than an IP is found
@@ -186,3 +200,6 @@ fi
 
 ### end of script
 $LOGGER_BIN $LOGGER_OPTS "Finished applying iptables rules"
+
+echo $(date -Is) - updated > ${STATUS_FILE}
+
