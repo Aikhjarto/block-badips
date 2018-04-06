@@ -6,9 +6,9 @@
 # The iptables rules are updated every time this script is executed. Additionally this script is
 # quiet on stdout, which makes it well suited for being executed as a cronjob.
 # This script uses ipset when available.
-# If /etc/block-badips.whitelist exits, IPv4 adresses, standing in lines containing nothing else
+# If /etc/block-badips.whitelist exists, IPv4 adresses, standing in lines containing nothing else
 # than a single IPv4 address, are never blocked.
-# HTTP 504 errors are ignored up to MAX_N_ERROR times.
+# HTTP 504 and HTTP 502 errors are ignored up to MAX_N_ERROR times.
 # 
 # Please also use fail2ban with the badips modification and help to maintain the list of attackers.
 # See also: fail2ban and http:///www.badips.com
@@ -76,12 +76,21 @@ elif grep -q -i HTML $FILE; then
 	$LOGGER_BIN $LOGGER_OPTS -s "ERROR: $URL got HTML file instead of text file"
 	# uncomment mail for debugging, productive script shouldn't depend on mail
 	# mail -s "add badips error" root < "$FILE"
+	DELAYED_ERROR=""
 	if grep -q "<head><title>504 Gateway Time-out</title></head>" $FILE; then
 		$LOGGER_BIN $LOGGER_OPTS -s "$URL cannot be fetched because of 504 Gateway Time-out"
 		echo $(date -Is) - ERROR 504 >> ${STATUS_FILE}
+		DELAYED_ERROR=1
+	fi
+	if grep -q "<head><title>502 Bad Gateway</title></head>" $FILE; then
+		$LOGGER_BIN $LOGGER_OPTS -s "$URL cannot be fetched because of 502 Bad Gateway"
+		echo $(date -Is) - ERROR 502 >> ${STATUS_FILE}
+		DELAYED_ERROR=1
+	fi
+	if [ ${DELAYED_ERROR} -gt 0 ]; then
 		N_ERROR=$(cat $FILE | wc -l) 
 		if  [ $N_ERROR -gt $MAX_N_ERROR ]; then
-			$LOGGER_BIN $LOGGER_OPTS -s "Error 504 raised $N_ERROR times in a row!"
+			$LOGGER_BIN $LOGGER_OPTS -s "Errors raised $N_ERROR times in a row!"
 			exit 1
 		else
 			exit 0
