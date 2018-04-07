@@ -42,6 +42,12 @@ type "$LOGGER_BIN"  >/dev/null 2>&1 || { echo >&2 "$LOGGER_BIN not found.  Abort
 
 LOGGER_OPTS="-t block_badips"
 
+if [ -n "$BADIPS_NO_STDERR" ]; then
+	LOGGER_OPTS_ERROR="$LOGGER_OPTS -p err"
+else
+	LOGGER_OPTS_ERROR="$LOGGER_OPTS -p err -s"
+fi
+
 # URL where to fetch IP list from badips.com
 URL="https://www.badips.com/get/list/ssh/2?age=2w"
 
@@ -57,7 +63,7 @@ elif type wget >/dev/null; then
 	r=$(wget -q -O "$FILE" "$URL")
 fi
 if [ $? -ne 0 ]; then
-	$LOGGER_BIN $LOGGER_OPTS -s "ERROR: download of $URL failed with exit code $? and message ${r}"
+	$LOGGER_BIN $LOGGER_OPTS_ERROR "ERROR: download of $URL failed with exit code $? and message ${r}"
 	exit 1
 else
 	$LOGGER_BIN $LOGGER_OPTS "Got "$(wc -l < "$FILE" ) " lines"
@@ -69,28 +75,28 @@ fi
 # Hint: grep returns 1 or true if there is no match in the file
 if [ ! -s $FILE ]; then
 	# file does not exist or is empty
-	$LOGGER_BIN $LOGGER_OPTS -s "ERROR: $URL sent empty or no file"
+	$LOGGER_BIN $LOGGER_OPTS_ERROR "ERROR: $URL sent empty or no file"
 	exit 1
 elif grep -q -i HTML $FILE; then
 	# if there was a problem, sometimes a HTML file containing an error message is sent
-	$LOGGER_BIN $LOGGER_OPTS -s "ERROR: $URL got HTML file instead of text file"
+	$LOGGER_BIN $LOGGER_OPTS_ERROR "ERROR: $URL got HTML file instead of text file"
 	# uncomment mail for debugging, productive script shouldn't depend on mail
 	# mail -s "add badips error" root < "$FILE"
 	DELAYED_ERROR=""
 	if grep -q "<head><title>504 Gateway Time-out</title></head>" $FILE; then
-		$LOGGER_BIN $LOGGER_OPTS -s "$URL cannot be fetched because of 504 Gateway Time-out"
+		$LOGGER_BIN $LOGGER_OPTS_ERROR "$URL cannot be fetched because of 504 Gateway Time-out"
 		echo $(date -Is) - ERROR 504 >> ${STATUS_FILE}
 		DELAYED_ERROR=1
 	fi
 	if grep -q "<head><title>502 Bad Gateway</title></head>" $FILE; then
-		$LOGGER_BIN $LOGGER_OPTS -s "$URL cannot be fetched because of 502 Bad Gateway"
+		$LOGGER_BIN $LOGGER_OPTS_ERROR "$URL cannot be fetched because of 502 Bad Gateway"
 		echo $(date -Is) - ERROR 502 >> ${STATUS_FILE}
 		DELAYED_ERROR=1
 	fi
 	if [ ${DELAYED_ERROR} -gt 0 ]; then
 		N_ERROR=$(cat $FILE | wc -l) 
 		if  [ $N_ERROR -gt $MAX_N_ERROR ]; then
-			$LOGGER_BIN $LOGGER_OPTS -s "Errors raised $N_ERROR times in a row!"
+			$LOGGER_BIN $LOGGER_OPTS_ERROR "Errors raised $N_ERROR times in a row!"
 			exit 1
 		else
 			exit 0
@@ -99,7 +105,7 @@ elif grep -q -i HTML $FILE; then
 	exit 1
 elif grep -v -q -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' $FILE; then
 	# something else than an IP is found
-	$LOGGER_BIN $LOGGER_OPTS -s "ERROR: $URL contained something else than a list of IPv4 addresses"
+	$LOGGER_BIN $LOGGER_OPTS_ERROR "ERROR: $URL contained something else than a list of IPv4 addresses"
 	echo $FILE | mailx -s "badip erronous file" root
 	exit 1
 fi
