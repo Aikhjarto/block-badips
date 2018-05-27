@@ -33,6 +33,7 @@ IPSET_BIN=/usr/sbin/ipset
 WHITELIST_FILE=/etc/block-badips.whitelist
 STATUS_FILE=/tmp/block-badips.status
 MAX_N_ERROR=10
+BADIPS_NO_STDERR=""
 
 if ( [ ! -x $IPSET_BIN ] ) && ( [ ! -x $IPTABLES_BIN ] || [ ! -x $IPTABLES_SAVE_BIN ] ); then
 	echo >&2 "Either ipset or iptables and iptables-save must be available"
