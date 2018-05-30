@@ -34,6 +34,7 @@ WHITELIST_FILE=/etc/block-badips.whitelist
 STATUS_FILE=/tmp/block-badips.status
 MAX_N_ERROR=10
 BADIPS_NO_STDERR=""
+WHITELIST_FILE=""
 
 if ( [ ! -x $IPSET_BIN ] ) && ( [ ! -x $IPTABLES_BIN ] || [ ! -x $IPTABLES_SAVE_BIN ] ); then
 	echo >&2 "Either ipset or iptables and iptables-save must be available"
@@ -113,8 +114,8 @@ fi
 # assert: $FILE contains a single ipv4 adresses in each line
 
 # remove IPs from whitelist file
-if [ -s ${WHITELIST_FILE} ]; then
-	comm -3 <(sort ${FILE}) <(grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' ${WHILELIST_FILE}) > ${FILE}
+if [ -s "${WHITELIST_FILE}" ]; then
+	comm -3 <(sort ${FILE}) <(grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' ${WHITELIST_FILE}) > ${FILE}
 fi
 
 ### main part
