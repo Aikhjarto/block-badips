@@ -159,7 +159,8 @@ if [ -x $IPSET_BIN ]; then
 	### delete old rules, that are not needed any more
 	$LOGGER_BIN $LOGGER_OPTS "Removing "$(wc -l < $OLD_IPS )" old entries"
 	while read IP; do
-		$IPSET_BIN del BADIP $IP || echo "Warning when deleting $IP"
+		#$IPSET_BIN del BADIP $IP || echo "Warning when deleting $IP"
+		$IPSET_BIN del BADIP $IP
 	done < "$OLD_IPS"
 	rm "$OLD_IPS"
 	trap "rm -f $NEW_IPS" INT TERM EXIT
@@ -167,7 +168,8 @@ if [ -x $IPSET_BIN ]; then
 	### add new IPs that should be blocked
 	$LOGGER_BIN $LOGGER_OPTS "Adding "$(wc -l < $NEW_IPS)" new entries"
 	while read IP; do
-		$IPSET_BIN add BADIP $IP || echo "Warning when adding $IP"
+		#$IPSET_BIN add BADIP $IP || echo "Warning when adding $IP"
+		$IPSET_BIN add BADIP $IP 
 	done < "$NEW_IPS"
 	rm "$NEW_IPS"
 	
