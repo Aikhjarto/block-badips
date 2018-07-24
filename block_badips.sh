@@ -113,6 +113,9 @@ elif grep -v -q -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' $FILE; then
 fi
 # assert: $FILE contains a single ipv4 adresses in each line
 
+# remove the NULL IP since ipset will trigger errexit if 0.0.0.0 appears
+sed -i ${FILE} -e '/0.0.0.0/d'
+
 # remove IPs from whitelist file
 if [ -s "${WHITELIST_FILE}" ]; then
 	comm -3 <(sort ${FILE}) <(grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' ${WHITELIST_FILE}) > ${FILE}
