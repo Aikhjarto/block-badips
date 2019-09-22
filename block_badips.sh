@@ -105,12 +105,18 @@ elif grep -q -i HTML $FILE; then
 		fi
 	fi
 	exit 1
-elif grep -v -q -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' $FILE; then
+elif grep -v -q -oE '^(([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4})$' $FILE; then
 	# something else than an IP is found
 	$LOGGER_BIN $LOGGER_OPTS_ERROR "ERROR: $URL contained something else than a list of IPv4 addresses"
 	echo $FILE | mailx -s "badip erronous file" root
 	exit 1
 fi
+
+# assert: $FILE contains a single IPv4 od IPv6 adresses in each line
+
+# leave just IPv4 addresses in ${FILE} 
+sed -i -E '/^([0-9]{1,3}[\.]){3}[0-9]{1,3}$/!d' ${FILE}
+
 # assert: $FILE contains a single ipv4 adresses in each line
 
 # remove the NULL IP since ipset will trigger errexit if 0.0.0.0 appears
