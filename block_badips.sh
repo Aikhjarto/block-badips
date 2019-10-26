@@ -32,7 +32,6 @@ LOGGER_BIN=/usr/bin/logger
 IPSET_BIN=/usr/sbin/ipset
 WHITELIST_FILE=/etc/block-badips.whitelist
 STATUS_FILE=/tmp/block-badips.status
-MAX_N_ERROR=10
 BADIPS_NO_STDERR=""
 WHITELIST_FILE=""
 
@@ -72,43 +71,37 @@ else
 fi
 
 ### input check
-# check downloaded file (should contain a single ipv4 adresses in each line)
+# Check downloaded file (should contain a single IP adresses in each line).
 # In the case of an error, $FILE is either empty or an HTML page
 # Hint: grep returns 1 or true if there is no match in the file
-if [ ! -s $FILE ]; then
+if [ ! -s ${FILE} ]; then
 	# file does not exist or is empty
-	$LOGGER_BIN $LOGGER_OPTS_ERROR "ERROR: $URL sent empty or no file"
+	$LOGGER_BIN $LOGGER_OPTS_ERROR "ERROR: ${URL} sent empty or no file"
 	exit 1
-elif grep -q -i HTML $FILE; then
-	# if there was a problem, sometimes a HTML file containing an error message is sent
-	$LOGGER_BIN $LOGGER_OPTS_ERROR "ERROR: $URL got HTML file instead of text file"
-	# uncomment mail for debugging, productive script shouldn't depend on mail
-	# mail -s "add badips error" root < "$FILE"
-	DELAYED_ERROR=""
-	if grep -q "<head><title>504 Gateway Time-out</title></head>" $FILE; then
-		$LOGGER_BIN $LOGGER_OPTS_ERROR "$URL cannot be fetched because of 504 Gateway Time-out"
+elif grep -q -i HTML ${FILE}; then
+	# file contains HTML code
+	if grep -q "<head><title>504 Gateway Time-out</title></head>" ${FILE}; then
+		$LOGGER_BIN $LOGGER_OPTS_ERROR "ERROR: ${URL} cannot be fetched because of 504 Gateway Time-out"
 		echo $(date -Is) - ERROR 504 >> ${STATUS_FILE}
-		DELAYED_ERROR=1
-	fi
-	if grep -q "<head><title>502 Bad Gateway</title></head>" $FILE; then
-		$LOGGER_BIN $LOGGER_OPTS_ERROR "$URL cannot be fetched because of 502 Bad Gateway"
+	elif grep -q "<head><title>502 Bad Gateway</title></head>" ${FILE}; then
+		$LOGGER_BIN $LOGGER_OPTS_ERROR "ERROR: ${URL} cannot be fetched because of 502 Bad Gateway"
 		echo $(date -Is) - ERROR 502 >> ${STATUS_FILE}
-		DELAYED_ERROR=1
-	fi
-	if [ ${DELAYED_ERROR} -gt 0 ]; then
-		N_ERROR=$(cat $FILE | wc -l) 
-		if  [ $N_ERROR -gt $MAX_N_ERROR ]; then
-			$LOGGER_BIN $LOGGER_OPTS_ERROR "Errors raised $N_ERROR times in a row!"
-			exit 1
-		else
-			exit 0
-		fi
+	else
+		# if there was a problem, sometimes a HTML file containing an error message is sent
+		$LOGGER_BIN $LOGGER_OPTS_ERROR "ERROR: ${URL} got HTML file instead of text file, see ${STATUS_FILE} for details."
+		# uncomment mail for debugging, productive script shouldn't depend on mail
+		#mail -s "add badips error" root < "${FILE}"
+		date -Is >> ${STATUS_FILE}
+		cat ${FILE} >> ${STATUS_FILE}
 	fi
 	exit 1
 elif grep -v -q -oE '^(([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4})$' $FILE; then
 	# something else than an IP is found
-	$LOGGER_BIN $LOGGER_OPTS_ERROR "ERROR: $URL contained something else than a list of IPv4 addresses"
-	echo $FILE | mailx -s "badip erronous file" root
+	$LOGGER_BIN $LOGGER_OPTS_ERROR "ERROR: ${URL} contained something else than a list of IPv4 addresses"
+	# uncomment mail for debugging, productive script shouldn't depend on mail
+	# mail -s "badip erronous file" rooti < "${FILE}"
+	date -Is >> ${STATUS_FILE}
+	cat ${FILE} >> ${STATUS_FILE}
 	exit 1
 fi
 
@@ -121,6 +114,9 @@ sed -i -E '/^([0-9]{1,3}[\.]){3}[0-9]{1,3}$/!d' ${FILE}
 
 # remove the NULL IP since ipset will trigger errexit if 0.0.0.0 appears
 sed -i ${FILE} -e '/0.0.0.0/d'
+
+# whitelist unroutable (local) IPv4 addresses
+sed -i -E '/^(192\.168|10\.|172\.1[6789]\.|172\.2[0-9]\.|172\.3[01]\.|169\.254)/d' ${FILE}
 
 # remove IPs from whitelist file
 if [ -s "${WHITELIST_FILE}" ]; then
@@ -229,5 +225,8 @@ fi
 ### end of script
 $LOGGER_BIN $LOGGER_OPTS "Finished applying iptables rules"
 
-echo $(date -Is) - updated > ${STATUS_FILE}
+echo $(date -Is) - updated >> ${STATUS_FILE}
+
+# keep just the last lines in STATUS_FILE
+echo "$(tail -1000 ${STATUS_FILE})" > ${STATUS_FILE}a
 
