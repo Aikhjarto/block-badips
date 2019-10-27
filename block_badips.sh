@@ -228,5 +228,5 @@ $LOGGER_BIN $LOGGER_OPTS "Finished applying iptables rules"
 echo $(date -Is) - updated >> ${STATUS_FILE}
 
 # keep just the last lines in STATUS_FILE
-echo "$(tail -1000 ${STATUS_FILE})" > ${STATUS_FILE}a
+echo "$(tail -1000 ${STATUS_FILE})" > ${STATUS_FILE}
 
