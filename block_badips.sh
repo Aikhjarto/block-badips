@@ -32,8 +32,10 @@ LOGGER_BIN=/usr/bin/logger
 IPSET_BIN=/usr/sbin/ipset
 WHITELIST_FILE=/etc/block-badips.whitelist
 STATUS_FILE=/tmp/block-badips.status
-BADIPS_NO_STDERR=""
-WHITELIST_FILE=""
+BADIPS_NO_STDERR=${BADIPS_NO_STDERR:-""}
+WHITELIST_FILE=${WHITELIST_FILE:-""}
+N_DOWNLOAD_RETRY=5
+DOWNLOAD_RETRY_WAIT_S=30
 
 if ( [ ! -x $IPSET_BIN ] ) && ( [ ! -x $IPTABLES_BIN ] || [ ! -x $IPTABLES_SAVE_BIN ] ); then
 	echo >&2 "Either ipset or iptables and iptables-save must be available"
@@ -52,56 +54,75 @@ fi
 # URL where to fetch IP list from badips.com
 URL="https://www.badips.com/get/list/ssh/2?age=2w"
 
-### download
-$LOGGER_BIN $LOGGER_OPTS "Fetching list of bad IPs from $URL"
-FILE=$(mktemp -t block_badips.new.XXXXXX)
-# set trap to remove temp file if download failes
-trap "rm -f $FILE" INT TERM EXIT
-# Try curl or wget to download.
-if type curl >/dev/null; then
-	r=$(curl -s $URL > "$FILE")
-elif type wget >/dev/null; then 
-	r=$(wget -q -O "$FILE" "$URL")
-fi
-if [ $? -ne 0 ]; then
-	$LOGGER_BIN $LOGGER_OPTS_ERROR "ERROR: download of $URL failed with exit code $? and message ${r}"
-	exit 1
-else
-	$LOGGER_BIN $LOGGER_OPTS "Got "$(wc -l < "$FILE" ) " lines"
-fi
-
-### input check
-# Check downloaded file (should contain a single IP adresses in each line).
-# In the case of an error, $FILE is either empty or an HTML page
-# Hint: grep returns 1 or true if there is no match in the file
-if [ ! -s ${FILE} ]; then
-	# file does not exist or is empty
-	$LOGGER_BIN $LOGGER_OPTS_ERROR "ERROR: ${URL} sent empty or no file"
-	exit 1
-elif grep -q -i HTML ${FILE}; then
-	# file contains HTML code
-	if grep -q "<head><title>504 Gateway Time-out</title></head>" ${FILE}; then
-		$LOGGER_BIN $LOGGER_OPTS_ERROR "ERROR: ${URL} cannot be fetched because of 504 Gateway Time-out"
-		echo $(date -Is) - ERROR 504 >> ${STATUS_FILE}
-	elif grep -q "<head><title>502 Bad Gateway</title></head>" ${FILE}; then
-		$LOGGER_BIN $LOGGER_OPTS_ERROR "ERROR: ${URL} cannot be fetched because of 502 Bad Gateway"
-		echo $(date -Is) - ERROR 502 >> ${STATUS_FILE}
+while [ ${N_DOWNLOAD_RETRY} -gt 0 ]; do
+	### download
+	$LOGGER_BIN $LOGGER_OPTS "Fetching list of bad IPs from $URL"
+	FILE=$(mktemp -t block_badips.new.XXXXXX)
+	# set trap to remove temp file if download failes
+	trap "rm -f $FILE" INT TERM EXIT
+	# Try curl or wget to download.
+	if type curl >/dev/null; then
+		r=$(curl -s $URL > "$FILE")
+	elif type wget >/dev/null; then 
+		r=$(wget -q -O "$FILE" "$URL")
+	fi
+	if [ $? -ne 0 ]; then
+		$LOGGER_BIN $LOGGER_OPTS_ERROR "ERROR: download of $URL failed with exit code $? and message ${r}"
+		N_DOWNLOAD_RETRY=$((N_DOWNLOAD_RETRY-1))
+		sleep ${DOWNLOAD_RETRY_WAIT_S}
+		continue
 	else
-		# if there was a problem, sometimes a HTML file containing an error message is sent
-		$LOGGER_BIN $LOGGER_OPTS_ERROR "ERROR: ${URL} got HTML file instead of text file, see ${STATUS_FILE} for details."
+		$LOGGER_BIN $LOGGER_OPTS "Got "$(wc -l < "$FILE" ) " lines"
+	fi
+
+	### input check
+	# Check downloaded file (should contain a single IP adresses in each line).
+	# In the case of an error, $FILE is either empty or an HTML page
+	# Hint: grep returns 1 or true if there is no match in the file
+	if [ ! -s ${FILE} ]; then
+		# file does not exist or is empty
+		$LOGGER_BIN $LOGGER_OPTS_ERROR "ERROR: ${URL} sent empty or no file"
+		N_DOWNLOAD_RETRY=$((N_DOWNLOAD_RETRY-1))
+		sleep ${DOWNLOAD_RETRY_WAIT_S}
+		continue
+	elif grep -q -i HTML ${FILE}; then
+		# file contains HTML code
+		if grep -q "<head><title>504 Gateway Time-out</title></head>" ${FILE}; then
+			$LOGGER_BIN $LOGGER_OPTS_ERROR "ERROR: ${URL} cannot be fetched because of 504 Gateway Time-out"
+			echo $(date -Is) - ERROR 504 >> ${STATUS_FILE}
+		elif grep -q "<head><title>502 Bad Gateway</title></head>" ${FILE}; then
+			$LOGGER_BIN $LOGGER_OPTS_ERROR "ERROR: ${URL} cannot be fetched because of 502 Bad Gateway"
+			echo $(date -Is) - ERROR 502 >> ${STATUS_FILE}
+		else
+			# if there was a problem, sometimes a HTML file containing an error message is sent
+			$LOGGER_BIN $LOGGER_OPTS_ERROR "ERROR: ${URL} got HTML file instead of text file, see ${STATUS_FILE} for details."
+			# uncomment mail for debugging, productive script shouldn't depend on mail
+			#mail -s "add badips error" root < "${FILE}"
+			date -Is >> ${STATUS_FILE}
+			cat ${FILE} >> ${STATUS_FILE}
+		fi
+		N_DOWNLOAD_RETRY=$((N_DOWNLOAD_RETRY-1))
+		sleep ${DOWNLOAD_RETRY_WAIT_S}
+		continue
+	elif grep -v -q -oE '^(([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4})$' $FILE; then
+		# something else than an IP is found
+		$LOGGER_BIN $LOGGER_OPTS_ERROR "ERROR: ${URL} contained something else than a list of IPv4 addresses"
 		# uncomment mail for debugging, productive script shouldn't depend on mail
-		#mail -s "add badips error" root < "${FILE}"
+		# mail -s "badip erronous file" rooti < "${FILE}"
 		date -Is >> ${STATUS_FILE}
 		cat ${FILE} >> ${STATUS_FILE}
+		N_DOWNLOAD_RETRY=$((N_DOWNLOAD_RETRY-1))
+		sleep ${DOWNLOAD_RETRY_WAIT_S}
+		continue
+	else
+		# everything fine, continue outside loop
+		break
 	fi
-	exit 1
-elif grep -v -q -oE '^(([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4})$' $FILE; then
-	# something else than an IP is found
-	$LOGGER_BIN $LOGGER_OPTS_ERROR "ERROR: ${URL} contained something else than a list of IPv4 addresses"
-	# uncomment mail for debugging, productive script shouldn't depend on mail
-	# mail -s "badip erronous file" rooti < "${FILE}"
-	date -Is >> ${STATUS_FILE}
-	cat ${FILE} >> ${STATUS_FILE}
+done
+
+# quit if no valid file could be retrieved
+if [ ${N_DOWNLOAD_RETRY} -lt 0 ]; then
+	$LOGGER_BIN $LOGGER_OPTS_ERROR "ERROR: ${URL} does not provide list of IPs after several tries. Giving up now. "
 	exit 1
 fi
 
