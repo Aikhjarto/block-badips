@@ -6,8 +6,10 @@
 # The iptables rules are updated every time this script is executed. Additionally this script is
 # quiet on stdout, which makes it well suited for being executed as a cronjob.
 # This script uses ipset when available.
-# If /etc/block-badips.whitelist exists, IPv4 adresses, standing in lines containing nothing else
+# If /etc/block-badips.whitelist exists, IP adresses, standing in lines containing nothing else
 # than a single IPv4 address, are never blocked.
+# If /etc/block-badips.blacklist exists, IP adresses, standing in lines containing nothing else
+# than a single IPv4 address, are always blocked.
 # HTTP 504 and HTTP 502 errors are ignored up to MAX_N_ERROR times.
 # 
 # Please also use fail2ban with the badips modification and help to maintain the list of attackers.
@@ -31,6 +33,7 @@ IPTABLES_SAVE_BIN=/usr/sbin/iptables-save
 LOGGER_BIN=/usr/bin/logger
 IPSET_BIN=/usr/sbin/ipset
 WHITELIST_FILE=/etc/block-badips.whitelist
+BLACKLIST_FILE=/etc/block-badips.blacklist
 STATUS_FILE=/tmp/block-badips.status
 BADIPS_NO_STDERR=${BADIPS_NO_STDERR:-""}
 N_DOWNLOAD_RETRY=5
@@ -46,8 +49,10 @@ LOGGER_OPTS="-t block_badips"
 
 if [ -n "$BADIPS_NO_STDERR" ]; then
 	LOGGER_OPTS_ERROR="$LOGGER_OPTS -p err"
+	LOGGER_OPTS_WARN="$LOGGER_OPTS -p warn"
 else
 	LOGGER_OPTS_ERROR="$LOGGER_OPTS -p err -s"
+	LOGGER_OPTS_WARN="$LOGGER_OPTS -p warn -s"
 fi
 
 # URL where to fetch IP list from badips.com
@@ -66,7 +71,7 @@ while [ ${N_DOWNLOAD_RETRY} -gt 0 ]; do
 		r=$(wget -q -O "$FILE" "$URL")
 	fi
 	if [ $? -ne 0 ]; then
-		$LOGGER_BIN $LOGGER_OPTS_ERROR "ERROR: download of $URL failed with exit code $? and message ${r}"
+		$LOGGER_BIN $LOGGER_OPTS_WARN "Download of $URL failed with exit code $? and message ${r}"
 		N_DOWNLOAD_RETRY=$((N_DOWNLOAD_RETRY-1))
 		sleep ${DOWNLOAD_RETRY_WAIT_S}
 		continue
@@ -80,21 +85,21 @@ while [ ${N_DOWNLOAD_RETRY} -gt 0 ]; do
 	# Hint: grep returns 1 or true if there is no match in the file
 	if [ ! -s ${FILE} ]; then
 		# file does not exist or is empty
-		$LOGGER_BIN $LOGGER_OPTS_ERROR "ERROR: ${URL} sent empty or no file"
+		$LOGGER_BIN $LOGGER_OPTS_WARN "${URL} sent empty or no file"
 		N_DOWNLOAD_RETRY=$((N_DOWNLOAD_RETRY-1))
 		sleep ${DOWNLOAD_RETRY_WAIT_S}
 		continue
 	elif grep -q -i HTML ${FILE}; then
 		# file contains HTML code
 		if grep -q "<head><title>504 Gateway Time-out</title></head>" ${FILE}; then
-			$LOGGER_BIN $LOGGER_OPTS_ERROR "ERROR: ${URL} cannot be fetched because of 504 Gateway Time-out"
+			$LOGGER_BIN $LOGGER_OPTS_WARN "${URL} cannot be fetched because of 504 Gateway Time-out"
 			echo $(date -Is) - ERROR 504 >> ${STATUS_FILE}
 		elif grep -q "<head><title>502 Bad Gateway</title></head>" ${FILE}; then
-			$LOGGER_BIN $LOGGER_OPTS_ERROR "ERROR: ${URL} cannot be fetched because of 502 Bad Gateway"
+			$LOGGER_BIN $LOGGER_OPTS_WARN "${URL} cannot be fetched because of 502 Bad Gateway"
 			echo $(date -Is) - ERROR 502 >> ${STATUS_FILE}
 		else
 			# if there was a problem, sometimes a HTML file containing an error message is sent
-			$LOGGER_BIN $LOGGER_OPTS_ERROR "ERROR: ${URL} got HTML file instead of text file, see ${STATUS_FILE} for details."
+			$LOGGER_BIN $LOGGER_OPTS_WARN "${URL} got HTML file instead of text file, see ${STATUS_FILE} for details."
 			# uncomment mail for debugging, productive script shouldn't depend on mail
 			#mail -s "add badips error" root < "${FILE}"
 			date -Is >> ${STATUS_FILE}
@@ -105,7 +110,7 @@ while [ ${N_DOWNLOAD_RETRY} -gt 0 ]; do
 		continue
 	elif grep -v -q -oE '^(([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4})$' $FILE; then
 		# something else than an IP is found
-		$LOGGER_BIN $LOGGER_OPTS_ERROR "ERROR: ${URL} contained something else than a list of IPv4 addresses"
+		$LOGGER_BIN $LOGGER_OPTS_WARN "${URL} contained something else than a list of IPv4 addresses"
 		# uncomment mail for debugging, productive script shouldn't depend on mail
 		# mail -s "badip erronous file" rooti < "${FILE}"
 		date -Is >> ${STATUS_FILE}
@@ -136,13 +141,28 @@ sed -i -E '/^([0-9]{1,3}[\.]){3}[0-9]{1,3}$/!d' ${FILE}
 sed -i ${FILE} -e '/0.0.0.0/d'
 
 # whitelist unroutable (local) IPv4 addresses
-sed -i -E '/^(192\.168|10\.|172\.1[6789]\.|172\.2[0-9]\.|172\.3[01]\.|169\.254)/d' ${FILE}
+sed -i -E '/^(192\.168|10\.|172\.1[6789]\.|172\.2[0-9]\.|172\.3[01]\.|169\.254|127\.)/d' ${FILE}
 
 # remove IPs from whitelist file
 if [ -s "${WHITELIST_FILE}" ]; then
 	FILE_TMP=$(mktemp -t block_badips.prefilter.XXXXXX)
 	mv ${FILE} ${FILE_TMP}
-	comm -3 <(sort ${FILE_TMP}) <(grep -oE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' ${WHITELIST_FILE} | sort) > ${FILE}
+	comm -23 <(sort ${FILE_TMP}) <(grep -oE '^(([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4})$' ${WHITELIST_FILE} | sort) > ${FILE}
+	rm ${FILE_TMP}
+fi
+
+# add IPs from blacklist file
+if [ -s "${BLACKLIST_FILE}" ]; then
+	FILE_TMP=$(mktemp -t block_badips.prefilter.XXXXXX)
+	mv ${FILE} ${FILE_TMP}
+	# Hint: grep will exit with error if no IP was in BLACKLIST_FILE. Thus disable 'errexit' briefley
+	set +e
+	grep -oE '^(([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4})$' ${BLACKLIST_FILE} >> ${FILE_TMP}
+	set -e
+	# Remove duplicates (same IP could have been in downloaded file and local blacklist file) to avoid warnings
+	# from ipset.
+	sort --unique ${FILE_TMP} > ${FILE}
+	rm ${FILE_TMP}
 fi
 
 ### main part
