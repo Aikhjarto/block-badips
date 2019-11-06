@@ -33,7 +33,6 @@ IPSET_BIN=/usr/sbin/ipset
 WHITELIST_FILE=/etc/block-badips.whitelist
 STATUS_FILE=/tmp/block-badips.status
 BADIPS_NO_STDERR=${BADIPS_NO_STDERR:-""}
-WHITELIST_FILE=${WHITELIST_FILE:-""}
 N_DOWNLOAD_RETRY=5
 DOWNLOAD_RETRY_WAIT_S=30
 
@@ -141,7 +140,9 @@ sed -i -E '/^(192\.168|10\.|172\.1[6789]\.|172\.2[0-9]\.|172\.3[01]\.|169\.254)/
 
 # remove IPs from whitelist file
 if [ -s "${WHITELIST_FILE}" ]; then
-	comm -3 <(sort ${FILE}) <(grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' ${WHITELIST_FILE}) > ${FILE}
+	FILE_TMP=$(mktemp -t block_badips.prefilter.XXXXXX)
+	mv ${FILE} ${FILE_TMP}
+	comm -3 <(sort ${FILE_TMP}) <(grep -oE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' ${WHITELIST_FILE} | sort) > ${FILE}
 fi
 
 ### main part
