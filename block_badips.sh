@@ -66,12 +66,18 @@ while [ ${N_DOWNLOAD_RETRY} -gt 0 ]; do
 	trap "rm -f $FILE" INT TERM EXIT
 	# Try curl or wget to download.
 	if type curl >/dev/null; then
+		set +e
 		r=$(curl -s $URL > "$FILE")
+		ret=$?
+		set -e
 	elif type wget >/dev/null; then 
+		set +e
 		r=$(wget -q -O "$FILE" "$URL")
+		ret=$?
+		set -e
 	fi
-	if [ $? -ne 0 ]; then
-		$LOGGER_BIN $LOGGER_OPTS_WARN "Download of $URL failed with exit code $? and message ${r}"
+	if [ ${ret} -ne 0 ]; then
+		$LOGGER_BIN $LOGGER_OPTS_WARN "Download of $URL failed with exit code ${ret} and message \"${r}\""
 		N_DOWNLOAD_RETRY=$((N_DOWNLOAD_RETRY-1))
 		sleep ${DOWNLOAD_RETRY_WAIT_S}
 		continue
@@ -125,8 +131,8 @@ while [ ${N_DOWNLOAD_RETRY} -gt 0 ]; do
 done
 
 # quit if no valid file could be retrieved
-if [ ${N_DOWNLOAD_RETRY} -lt 0 ]; then
-	$LOGGER_BIN $LOGGER_OPTS_ERROR "ERROR: ${URL} does not provide list of IPs after several tries. Giving up now. "
+if [ ${N_DOWNLOAD_RETRY} -le 0 ]; then
+	$LOGGER_BIN $LOGGER_OPTS_ERROR "ERROR: ${URL} does not provide list of IPs after several tries. Giving up now. Systemlog should have more information, e.g. journalctl SYSLOG_IDENTIFIER=block_badips or grep block_badips /var/log/messages"
 	exit 1
 fi
 
