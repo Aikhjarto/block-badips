@@ -55,12 +55,29 @@ else
 	LOGGER_OPTS_WARN="$LOGGER_OPTS -p warn -s"
 fi
 
-# URL where to fetch IP list from badips.com
-URL="https://www.badips.com/get/list/ssh/2?age=2w"
+# set a default URL where to fetch IP list
+[[ -z ${URL} ]] && URL="https://www.badips.com/get/list/ssh/2?age=2w"
 
+# check format of user supplied data to avoid parameter injection to curl/wget
+regex='^(https?|ftp|file)://[-A-Za-z0-9\+&@#/%?=~_|!:,.;]*[-A-Za-z0-9\+&@#/%=~_|]'
+if [[ ! ${URL} =~ $regex ]]; then
+	$LOGGER_BIN $LOGGER_OPTS_ERROR "Supplied URL ${URL} is malformatted."
+	exit 1
+fi
+regex=" |'"$'|\t'
+if [[ "${BADIPS_USER}" =~ $regex ]]; then
+	$LOGGER_BIN $LOGGER_OPTS_ERROR "Username BADIPS_USER is \"${BADIPS_USER}\" and contains a whitespace, which is not supported."
+	exit 1
+fi
+if [[ "${BADIPS_PASSWORD}" =~ $regex ]]; then
+	$LOGGER_BIN $LOGGER_OPTS_ERROR "Username BADIPS_PASSWORD is \"${BADIPS_PASSWORD}\" and contains a whitespace, which is not supported."
+	exit 1
+fi
+
+# download IP list
 while [ ${N_DOWNLOAD_RETRY} -gt 0 ]; do
 	### download
-	$LOGGER_BIN $LOGGER_OPTS "Fetching list of bad IPs from $URL"
+	$LOGGER_BIN $LOGGER_OPTS "Fetching list of bad IPs from ${URL} using username \"${BADIPS_USER}\""
 	FILE=$(mktemp -t block_badips.new.XXXXXX)
 	# set trap to remove temp file if download failes
 	trap "rm -f $FILE" INT TERM EXIT
@@ -68,18 +85,18 @@ while [ ${N_DOWNLOAD_RETRY} -gt 0 ]; do
 	if type curl >/dev/null; then
 		DOWNLOAD_PROGRAM="curl"
 		set +e
-		r=$(curl -s $URL > "$FILE")
+		r=$(curl -s -u ${BADIPS_USER}:${BADIPS_PASSWORD} ${URL} -o ${FILE})
 		ret=$?
 		set -e
 	elif type wget >/dev/null; then 
 		DOWNLOAD_PROGRAM="wget"
 		set +e
-		r=$(wget -q -O "$FILE" "$URL")
+		r=$(wget -q --user=${BADIPS_USER} --password=${BADIPS_PASSWORD} -O "$FILE" "$URL")
 		ret=$?
 		set -e
 	fi
 	if [ ${ret} -ne 0 ]; then
-		$LOGGER_BIN $LOGGER_OPTS_WARN "Download of ${URL} using ${DOWNLOAD_PROGRAM} failed with exit code ${ret} and message \"${r}\""
+		$LOGGER_BIN $LOGGER_OPTS_WARN "Download of ${URL} using ${DOWNLOAD_PROGRAM} and username \"${BADIPS_USER}\" failed with exit code ${ret} and message \"${r}\""
 		N_DOWNLOAD_RETRY=$((N_DOWNLOAD_RETRY-1))
 		sleep ${DOWNLOAD_RETRY_WAIT_S}
 		continue
