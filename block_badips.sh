@@ -154,7 +154,7 @@ else
 			N_DOWNLOAD_RETRY=$((N_DOWNLOAD_RETRY-1))
 			sleep ${DOWNLOAD_RETRY_WAIT_S}
 			continue
-		elif grep -v -q -oE '^(([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4})(/[1-9][0-9]?)?$' $FILE; then
+		elif grep -v -q -oE '^((([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}))(/[1-9][0-9]?)?$' $FILE; then
 			# something else than an IP or range is found
 			$LOGGER_BIN $LOGGER_OPTS_WARN "${URL} contained something else than a list of IP addresses and ranges"
 			# uncomment mail for debugging, productive script shouldn't depend on mail
@@ -283,12 +283,12 @@ update () {
 		### list of ips that are not considered bad any more
 		OLD_IPS=$(mktemp -t block_badips.old.XXXXXX)
 		trap "rm -f ${FILE_IPS} ${FILE_RANGES} ${FILE2} ${OLD_IPS}" INT TERM EXIT
-		comm -13 <(sort $FILE) <(grep -oE '(([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4})(/[1-9][0-9]?)?' $FILE2) > $OLD_IPS
+		comm -13 <(sort $FILE) <(grep -oE '((([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}))(/[1-9][0-9]?)?' $FILE2) > $OLD_IPS
 
 		### list of ips that are new and should be blocked
 		NEW_IPS=$(mktemp -t block_badips.newips.XXXXXX)
 		trap "rm -rf ${FILE_IPS} ${FILE_RANGES} ${FILE2} ${OLD_IPS} ${NEW_IPS}" INT TERM EXIT
-		comm -23 <(sort $FILE) <(grep -oE '(([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4})(/[1-9][0-9]?)?' $FILE2) > $NEW_IPS
+		comm -23 <(sort $FILE) <(grep -oE '((([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}))(/[1-9][0-9]?)?' $FILE2) > $NEW_IPS
 		
 		# get format of old rule (exact rule must be given to iptables as argument)
 		FMT=$(head -n 1 $FILE2)
