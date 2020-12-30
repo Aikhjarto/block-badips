@@ -271,6 +271,7 @@ update () {
 		# use tail instead is also no good since number of header lines depend on ipset version
 		# use computationally more demanding grep and awk
 		$IPSET_BIN list ${IPSET_NAME} -o save | grep add | awk '{ print $3 }' > "$FILE2"
+		$LOGGER_BIN $LOGGER_OPTS "Found "$(wc -l < $FILE2)" old entries in ipset ${IPSET_NAME}"
 						
 		### list of ips that are not considered bad any more
 		OLD_IPS=$(mktemp -t block_badips.oldips.XXXXXX)
@@ -283,14 +284,14 @@ update () {
 		comm -23 <(sort $FILE) <(sort $FILE2) > $NEW_IPS
 
 		### delete old rules, that are not needed any more
-		$LOGGER_BIN $LOGGER_OPTS "Removing "$(wc -l < $OLD_IPS )" old entries"
+		$LOGGER_BIN $LOGGER_OPTS "Removing "$(wc -l < $OLD_IPS )" old entries from ipset ${IPSET_NAME}"
 		while read IP; do
 			#$IPSET_BIN del BADIP $IP || echo "Warning when deleting $IP"
 			$IPSET_BIN del ${IPSET_NAME} $IP
 		done < "$OLD_IPS"
 		
 		### add new IPs that should be blocked
-		$LOGGER_BIN $LOGGER_OPTS "Adding "$(wc -l < $NEW_IPS)" new entries"
+		$LOGGER_BIN $LOGGER_OPTS "Adding "$(wc -l < $NEW_IPS)" new entries to iptset ${IPSET_NAME}"
 		while read IP; do
 			#$IPSET_BIN add BADIP $IP || echo "Warning when adding $IP"
 			$IPSET_BIN add ${IPSET_NAME} $IP 
@@ -304,7 +305,7 @@ update () {
 		trap "rm -f ${FILE_IP4} ${FILE_IP6} ${FILE_RANGES4} ${FILE_RANGES6} ${FILE2}" INT TERM EXIT
 		# export all rules with comment "BADIP" and replace -A (add) with -D (delete)
 		$IPTABLES_SAVE_BIN  | grep -e "--comment ${IPSET_NAME}" | grep -v -e '--match-set' | sed 's/-A/-D/' | sort > "$FILE2"
-		$LOGGER_BIN $LOGGER_OPTS "Found "$(wc -l < $FILE2)" old entries"
+		$LOGGER_BIN $LOGGER_OPTS "Found "$(wc -l < $FILE2)" old entries in iptables for ${IPSET_FAMILY}"
 		
 		### list of ips that are not considered bad any more
 		OLD_IPS=$(mktemp -t block_badips.oldips.XXXXXX)
@@ -320,13 +321,13 @@ update () {
 		FMT=$(head -n 1 $FILE2)
 		
 		### delete old rules, that are not needed any more
-		$LOGGER_BIN $LOGGER_OPTS "Removing "$(wc -l < $OLD_IPS )" old entries"
+		$LOGGER_BIN $LOGGER_OPTS "Removing "$(wc -l < $OLD_IPS )" old entries from iptables for ${IPSET_FAMILY}"
 		while read IP; do
 			$IPTABLES_BIN -w $(echo $FMT | sed -r "s!(([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4})(/[1-9][0-9]?)?!$IP!")
 		done < "$OLD_IPS"
 		
 		### add new IPs that should be blocked
-		$LOGGER_BIN $LOGGER_OPTS "Adding "$(wc -l < $NEW_IPS)" new entries"
+		$LOGGER_BIN $LOGGER_OPTS "Adding "$(wc -l < $NEW_IPS)" new entries from iptables for ${IPSET_FAMILY}"
 		while read IP; do
 			$IPTABLES_BIN -w -I INPUT -s $IP -j DROP -m comment --comment "${IPSET_NAME}"
 		done < "$NEW_IPS"
