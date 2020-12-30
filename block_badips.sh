@@ -31,8 +31,10 @@ set -o errexit
 
 trap 
 
-IPTABLES_BIN=/usr/sbin/iptables
-IPTABLES_SAVE_BIN=/usr/sbin/iptables-save
+IP4TABLES_BIN=/usr/sbin/iptables
+IP4TABLES_SAVE_BIN=/usr/sbin/iptables-save
+IP6TABLES_BIN=/usr/sbin/ip6tables
+IP6TABLES_SAVE_BIN=/usr/sbin/ip6tables-save
 LOGGER_BIN=/usr/bin/logger
 IPSET_BIN=/usr/sbin/ipset
 WHITELIST_FILE=/etc/block-badips.whitelist
@@ -42,9 +44,9 @@ BADIPS_NO_STDERR=${BADIPS_NO_STDERR:-""}
 N_DOWNLOAD_RETRY=5
 DOWNLOAD_RETRY_WAIT_S=30
 
-if ( [ ! -x $IPSET_BIN ] ) && ( [ ! -x $IPTABLES_BIN ] || [ ! -x $IPTABLES_SAVE_BIN ] ); then
-	echo >&2 "Either ipset or iptables and iptables-save must be available"
-fi
+#if ( [ ! -x $IPSET_BIN ] ) && ( [ ! -x $IPTABLES_BIN ] || [ ! -x $IPTABLES_SAVE_BIN ] ); then
+#	echo >&2 "Either ipset or iptables and iptables-save must be available"
+#fi
 
 type "$LOGGER_BIN"  >/dev/null 2>&1 || { echo >&2 "$LOGGER_BIN not found.  Aborting."; exit 1; }
 
@@ -221,73 +223,97 @@ grep "/" ${FILE} > ${FILE_RANGES} || true
 rm ${FILE}
 trap "rm -f ${FILE_IPS} ${FILE_RANGES}" INT TERM EXIT
 
+# split into IPv4 and IPv6
+FILE_IP4=$(mktemp -t block_badips.IP4.XXXX)
+FILE_IP6=$(mktemp -t block_badips.IP6.XXXX)
+FILE_RANGES4=$(mktemp -t block_badips.RANGES4.XXXXXX)
+FILE_RANGES6=$(mktemp -t block_badips.RANGES6.XXXXXX)
+grep -v ":" ${FILE_IPS} > ${FILE_IP4} || true
+grep ":" ${FILE_IPS} > ${FILE_IP6} || true
+grep -v ":" ${FILE_RANGES} > ${FILE_RANGES4} || true
+grep  ":" ${FILE_RANGES} > ${FILE_RANGES6} || true
+rm ${FILE_IPS} ${FILE_RANGES}
+trap "rm -f ${FILE_IP4} ${FILE_IP6} ${FILE_RANGES4} ${FILE_RANGES6}" INT TERM EXIT
+
+
 update () {
+
+	if [ $IPTABLES_BIN = $IP4TABLES_BIN ]; then
+		IPSET_NAME=BADIP4
+		IPSET_FAMILY=inet
+		IPTABLES_SAVE_BIN=$IP4TABLES_SAVE_BIN
+	else
+		IPSET_NAME=BADIP6
+		IPSET_FAMILY=inet6
+		IPTABLES_SAVE_BIN=$IP6TABLES_SAVE_BIN
+	fi
+
 	### main part
 	if [ -x $IPSET_BIN ] && [ -z "${FORCE_IPTABLES}" ] ; then
 		# use ipset if available since it's faster than plain iptables
 		# http://daemonkeeper.net/781/mass-blocking-ip-addresses-with-ipset/
 		
 		# create new ipset if not already there
-		if ! $IPSET_BIN list BADIP >/dev/null 2>&1; then
-			$IPSET_BIN create BADIP hash:ip hashsize 4096
+		if ! $IPSET_BIN list ${IPSET_NAME} >/dev/null 2>&1; then
+			$IPSET_BIN create ${IPSET_NAME} hash:ip hashsize 4096 family ${IPSET_FAMILY}
 		fi
 
 		# iptables should be added only once. So check if it already there.
-		if ! $IPTABLES_BIN -w -C INPUT  -m set --match-set BADIP src -m comment --comment "BADIP" -j REJECT > /dev/null 2>&1; then
-			$IPTABLES_BIN -w -I INPUT  -m set --match-set BADIP src -m comment --comment "BADIP" -j REJECT
+		if ! $IPTABLES_BIN -w -C INPUT  -m set --match-set ${IPSET_NAME} src -m comment --comment "${IPSET_NAME}" -j REJECT > /dev/null 2>&1; then
+			$IPTABLES_BIN -w -I INPUT  -m set --match-set ${IPSET_NAME}  src -m comment --comment "${IPSET_NAME}" -j REJECT
 		fi
 		
 		### get old blocked entries
-		FILE2=$(mktemp -t block_badips.old.XXXXXX)
+		FILE2=$(mktemp -t block_badips.oldentires.XXXXXX)
 		trap "rm -f ${FILE_IPS} ${FILE_RANGES} ${FILE2}" INT TERM EXIT
 		#       $IPSET_BIN list BADIP -o plain | tail -n +8 > "$FILE2"
 		# at first run, grep returns 1 since list is empty
 		# use tail instead is also no good since number of header lines depend on ipset version
 		# use computationally more demanding grep and awk
-		$IPSET_BIN list BADIP -o save | grep add | awk '{ print $3 }' > "$FILE2"
+		$IPSET_BIN list ${IPSET_NAME} -o save | grep add | awk '{ print $3 }' > "$FILE2"
 						
 		### list of ips that are not considered bad any more
-		OLD_IPS=$(mktemp -t block_badips.old.XXXXXX)
-		trap "rm -f ${FILE2} ${FILE_IPS} ${FILE_RANGES} ${OLD_IPS}" INT TERM EXIT
+		OLD_IPS=$(mktemp -t block_badips.oldips.XXXXXX)
+		trap "rm -f ${FILE2} ${FILE_IP4} ${FILE_IP6} ${FILE_RANGES4} ${FILE_RANGES6} ${OLD_IPS}" INT TERM EXIT
 		comm -13 <(sort $FILE) <(sort $FILE2) > $OLD_IPS
 
 		### list of ips that are new and should be blocked
 		NEW_IPS=$(mktemp -t block_badips.newips.XXXXXX)
-		trap "rm -rf ${FILE2} ${FILE_IPS} ${FILE_RANGES} ${OLD_IPS} ${NEW_IPS}" INT TERM EXIT
+		trap "rm -rf ${FILE2} ${FILE_IP4} ${FILE_IP6} ${FILE_RANGES4} ${FILE_RANGES6} ${OLD_IPS} ${NEW_IPS}" INT TERM EXIT
 		comm -23 <(sort $FILE) <(sort $FILE2) > $NEW_IPS
 
 		### delete old rules, that are not needed any more
 		$LOGGER_BIN $LOGGER_OPTS "Removing "$(wc -l < $OLD_IPS )" old entries"
 		while read IP; do
 			#$IPSET_BIN del BADIP $IP || echo "Warning when deleting $IP"
-			$IPSET_BIN del BADIP $IP
+			$IPSET_BIN del ${IPSET_NAME} $IP
 		done < "$OLD_IPS"
 		
 		### add new IPs that should be blocked
 		$LOGGER_BIN $LOGGER_OPTS "Adding "$(wc -l < $NEW_IPS)" new entries"
 		while read IP; do
 			#$IPSET_BIN add BADIP $IP || echo "Warning when adding $IP"
-			$IPSET_BIN add BADIP $IP 
+			$IPSET_BIN add ${IPSET_NAME} $IP 
 		done < "$NEW_IPS"
 		
 	else
 		# use iptables for ranges and if ipset is not available
 			
 		### get old blocked entries
-		FILE2=$(mktemp -t block_badips.old.XXXXXX)
-		trap "rm -f ${FILE_IPS} ${FILE_RANGES} ${FILE2}" INT TERM EXIT
+		FILE2=$(mktemp -t block_badips.oldentries.XXXXXX)
+		trap "rm -f ${FILE_IP4} ${FILE_IP6} ${FILE_RANGES4} ${FILE_RANGES6} ${FILE2}" INT TERM EXIT
 		# export all rules with comment "BADIP" and replace -A (add) with -D (delete)
-		$IPTABLES_SAVE_BIN  | grep -e "--comment BADIP" | grep -v -e '--match-set' | sed 's/-A/-D/' | sort > "$FILE2"
+		$IPTABLES_SAVE_BIN  | grep -e "--comment ${IPSET_NAME}" | grep -v -e '--match-set' | sed 's/-A/-D/' | sort > "$FILE2"
 		$LOGGER_BIN $LOGGER_OPTS "Found "$(wc -l < $FILE2)" old entries"
 		
 		### list of ips that are not considered bad any more
-		OLD_IPS=$(mktemp -t block_badips.old.XXXXXX)
-		trap "rm -f ${FILE_IPS} ${FILE_RANGES} ${FILE2} ${OLD_IPS}" INT TERM EXIT
+		OLD_IPS=$(mktemp -t block_badips.oldips.XXXXXX)
+		trap "rm -f ${FILE_IP4} ${FILE_IP6} ${FILE_RANGES4} ${FILE_RANGES6} ${FILE2} ${OLD_IPS}" INT TERM EXIT
 		comm -13 <(sort $FILE) <(grep -oE '((([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}))(/[1-9][0-9]?)?' $FILE2) > $OLD_IPS
 
 		### list of ips that are new and should be blocked
 		NEW_IPS=$(mktemp -t block_badips.newips.XXXXXX)
-		trap "rm -rf ${FILE_IPS} ${FILE_RANGES} ${FILE2} ${OLD_IPS} ${NEW_IPS}" INT TERM EXIT
+		trap "rm -rf ${FILE_IP4} ${FILE_IP6} ${FILE_RANGES4} ${FILE_RANGES6} ${FILE2} ${OLD_IPS} ${NEW_IPS}" INT TERM EXIT
 		comm -23 <(sort $FILE) <(grep -oE '((([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}))(/[1-9][0-9]?)?' $FILE2) > $NEW_IPS
 		
 		# get format of old rule (exact rule must be given to iptables as argument)
@@ -302,19 +328,34 @@ update () {
 		### add new IPs that should be blocked
 		$LOGGER_BIN $LOGGER_OPTS "Adding "$(wc -l < $NEW_IPS)" new entries"
 		while read IP; do
-			$IPTABLES_BIN -w -I INPUT -s $IP -j DROP -m comment --comment "BADIP"
+			$IPTABLES_BIN -w -I INPUT -s $IP -j DROP -m comment --comment "${IPSET_NAME}"
 		done < "$NEW_IPS"
 		
 	fi
 }
 
-# add IPs
-FILE=$FILE_IPS
+# add IPv4
+FILE=$FILE_IP4
+IPTABLES_BIN=$IP4TABLES_BIN
 FORCE_IPTABLES=""
 update
 
-# add ranges
-FILE=$FILE_RANGES
+# add IPv4 ranges
+FILE=$FILE_RANGES4
+IPTABLES_BIN=$IP4TABLES_BIN
+FORCE_IPTABLES="y"
+update
+
+
+# add IPv6
+FILE=$FILE_IP6
+IPTABLES_BIN=$IP6TABLES_BIN
+FORCE_IPTABLES=""
+update
+
+# add IPv6 ranges
+FILE=$FILE_RANGES6
+IPTABLES_BIN=$IP6TABLES_BIN
 FORCE_IPTABLES="y"
 update
 
