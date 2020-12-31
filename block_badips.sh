@@ -323,7 +323,7 @@ update () {
 		### delete old rules, that are not needed any more
 		$LOGGER_BIN $LOGGER_OPTS "Removing "$(wc -l < $OLD_IPS )" old entries from iptables for ${IPSET_FAMILY}"
 		while read IP; do
-			$IPTABLES_BIN -w $(echo $FMT | sed -r "s!(([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4})(/[1-9][0-9]?)?!$IP!")
+			$IPTABLES_BIN -w $(echo $FMT | sed -r "s!((([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}))(/[1-9][0-9]?)?!$IP!")
 		done < "$OLD_IPS"
 		
 		### add new IPs that should be blocked
