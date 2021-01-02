@@ -276,26 +276,29 @@ update () {
 		CURRENT_RULES=$($IPTABLES_SAVE_BIN  | { grep -e "--comment ${IPSET_NAME}" || true ; } |  grep -v -e '--match-set' || true )
 		if [ -n "$CURRENT_RULES" ]; then
 			$LOGGER_BIN $LOGGER_OPTS "Found "$(echo "$CURRENT_RULES" | wc -l )" entries in iptables for ${IPSET_FAMILY}"
-		fi
+			
+			# get format of old rule (exact rule must be given to iptables as argument)
+			FMT=$(echo "$CURRENT_RULES" | tail -n 1 | sed 's/-A /-D /')
+			# Hint: don't pipe to 'head' but use 'tail' to avoid 'echo' being closed when something is still to write resulting in broken pipes
 
-		# get format of old rule (exact rule must be given to iptables as argument)
-		FMT=$(echo "$CURRENT_RULES" | head -n 1 | sed 's/-A /-D /')
-		
-		# get currently blocked IPs/ranges
-		CURRENT_ENTRIES=$(echo "$CURRENT_RULES" | grep -oE '((([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}))(/[1-9][0-9]?)?' | sort)
-		
-		### list of ips that are not considered bad any more
-		OUTDATED_ENTRIES=$(comm -13 <(echo "$FETCHED_ENTRIES") <(echo "$CURRENT_ENTRIES"))
+			# get currently blocked IPs/ranges
+			CURRENT_ENTRIES=$(echo "$CURRENT_RULES" | grep -oE '((([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}))(/[1-9][0-9]?)?' | sort)
+			
+			### list of ips that are not considered bad any more
+			OUTDATED_ENTRIES=$(comm -13 <(echo "$FETCHED_ENTRIES") <(echo "$CURRENT_ENTRIES"))
 
-		### list of ips that are new and should be blocked
-		NEW_ENTRIES=$(comm -23 <(echo "$FETCHED_ENTRIES") <(echo "$CURRENT_ENTRIES"))
-		
-		### delete old rules, that are not needed any more
-		if [ -n "$OUTDATED_ENTRIES" ]; then
-			$LOGGER_BIN $LOGGER_OPTS "Removing "$(echo "$OUTDATED_ENTRIES" | wc -l)" outdated entries from iptables for ${IPSET_FAMILY}"
-			while read IP; do
-				$IPTABLES_BIN -w $(echo $FMT | sed -r "s!((([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}))(/[1-9][0-9]?)?!$IP!")
-			done <<< "$OUTDATED_ENTRIES"
+			### list of ips that are new and should be blocked
+			NEW_ENTRIES=$(comm -23 <(echo "$FETCHED_ENTRIES") <(echo "$CURRENT_ENTRIES"))
+			
+			### delete old rules, that are not needed any more
+			if [ -n "$OUTDATED_ENTRIES" ]; then
+				$LOGGER_BIN $LOGGER_OPTS "Removing "$(echo "$OUTDATED_ENTRIES" | wc -l)" outdated entries from iptables for ${IPSET_FAMILY}"
+				while read IP; do
+					$IPTABLES_BIN -w $(echo $FMT | sed -r "s!((([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}))(/[1-9][0-9]?)?!$IP!")
+				done <<< "$OUTDATED_ENTRIES"
+			fi
+		else
+			NEW_ENTRIES="$FETCHED_ENTRIES"
 		fi
 
 		### add new IPs that should be blocked
