@@ -29,8 +29,6 @@ set -o errexit
 # debug
 #set -x 
 
-trap 
-
 IP4TABLES_BIN=/usr/sbin/iptables
 IP4TABLES_SAVE_BIN=/usr/sbin/iptables-save
 IP6TABLES_BIN=/usr/sbin/ip6tables
@@ -214,27 +212,6 @@ fi
 sed -i -E '/^(192\.168|10\.|172\.1[6789]\.|172\.2[0-9]\.|172\.3[01]\.|169\.254|127\.)/d' ${FILE}
 sed -i -E '/^((fe80)|(fec0)|(f[cd][0-9a-f]{2})):.*$/d' ${FILE}
 
-# split into IPs and ranges (IPs is faster with ipset and ranges are faster and easier to handle with iptables)
-FILE_IPS=$(mktemp -t block_badips.IPS.XXXXXX)
-FILE_RANGES=$(mktemp -t block_badips.RANGES.XXXXXX)
-trap "rm -f ${FILE} ${FILE_IPS} ${FILE_RANGES}" INT TERM EXIT
-grep -v "/" ${FILE} > ${FILE_IPS} || true
-grep "/" ${FILE} > ${FILE_RANGES} || true
-rm ${FILE}
-trap "rm -f ${FILE_IPS} ${FILE_RANGES}" INT TERM EXIT
-
-# split into IPv4 and IPv6
-FILE_IP4=$(mktemp -t block_badips.IP4.XXXX)
-FILE_IP6=$(mktemp -t block_badips.IP6.XXXX)
-FILE_RANGES4=$(mktemp -t block_badips.RANGES4.XXXXXX)
-FILE_RANGES6=$(mktemp -t block_badips.RANGES6.XXXXXX)
-grep -v ":" ${FILE_IPS} > ${FILE_IP4} || true
-grep ":" ${FILE_IPS} > ${FILE_IP6} || true
-grep -v ":" ${FILE_RANGES} > ${FILE_RANGES4} || true
-grep  ":" ${FILE_RANGES} > ${FILE_RANGES6} || true
-rm ${FILE_IPS} ${FILE_RANGES}
-trap "rm -f ${FILE_IP4} ${FILE_IP6} ${FILE_RANGES4} ${FILE_RANGES6}" INT TERM EXIT
-
 
 update () {
 
@@ -263,105 +240,106 @@ update () {
 			$IPTABLES_BIN -w -I INPUT  -m set --match-set ${IPSET_NAME}  src -m comment --comment "${IPSET_NAME}" -j REJECT
 		fi
 		
-		### get old blocked entries
-		FILE2=$(mktemp -t block_badips.oldentires.XXXXXX)
-		trap "rm -f ${FILE_IPS} ${FILE_RANGES} ${FILE2}" INT TERM EXIT
-		#       $IPSET_BIN list BADIP -o plain | tail -n +8 > "$FILE2"
-		# at first run, grep returns 1 since list is empty
-		# use tail instead is also no good since number of header lines depend on ipset version
-		# use computationally more demanding grep and awk
-		$IPSET_BIN list ${IPSET_NAME} -o save | grep add | awk '{ print $3 }' > "$FILE2"
-		$LOGGER_BIN $LOGGER_OPTS "Found "$(wc -l < $FILE2)" old entries in ipset ${IPSET_NAME}"
+		### get currently blocked entries
+		CURRENT_ENTRIES=$($IPSET_BIN list ${IPSET_NAME} -o save | grep add | awk '{ print $3 }' | sort)
+		$LOGGER_BIN $LOGGER_OPTS "Found "$(echo "$CURRENT_ENTRIES" | wc -l)" entries in ipset ${IPSET_NAME}"
 						
 		### list of ips that are not considered bad any more
-		OLD_IPS=$(mktemp -t block_badips.oldips.XXXXXX)
-		trap "rm -f ${FILE2} ${FILE_IP4} ${FILE_IP6} ${FILE_RANGES4} ${FILE_RANGES6} ${OLD_IPS}" INT TERM EXIT
-		comm -13 <(sort $FILE) <(sort $FILE2) > $OLD_IPS
+		OUTDATED_ENTRIES=$(comm -13 <(echo "$FETCHED_ENTRIES") <(echo "$CURRENT_ENTRIES"))
 
 		### list of ips that are new and should be blocked
-		NEW_IPS=$(mktemp -t block_badips.newips.XXXXXX)
-		trap "rm -rf ${FILE2} ${FILE_IP4} ${FILE_IP6} ${FILE_RANGES4} ${FILE_RANGES6} ${OLD_IPS} ${NEW_IPS}" INT TERM EXIT
-		comm -23 <(sort $FILE) <(sort $FILE2) > $NEW_IPS
+		NEW_ENTRIES=$(comm -23 <(echo "$FETCHED_ENTRIES") <(echo "$CURRENT_ENTRIES"))
 
 		### delete old rules, that are not needed any more
-		$LOGGER_BIN $LOGGER_OPTS "Removing "$(wc -l < $OLD_IPS )" old entries from ipset ${IPSET_NAME}"
-		while read IP; do
-			#$IPSET_BIN del BADIP $IP || echo "Warning when deleting $IP"
-			$IPSET_BIN del ${IPSET_NAME} $IP
-		done < "$OLD_IPS"
-		
+		if [ -n "$OUTDATED_ENTRIES" ]; then
+			$LOGGER_BIN $LOGGER_OPTS "Removing "$(echo "$OUTDATED_ENTRIES" | wc -l )" outdated entries from ipset ${IPSET_NAME}"
+			while read IP; do
+				#$IPSET_BIN del BADIP $IP || echo "Warning when deleting $IP"
+				$IPSET_BIN del ${IPSET_NAME} $IP
+			done <<< "$OUTDATED_ENTRIES"
+		fi
+
 		### add new IPs that should be blocked
-		$LOGGER_BIN $LOGGER_OPTS "Adding "$(wc -l < $NEW_IPS)" new entries to iptset ${IPSET_NAME}"
-		while read IP; do
-			#$IPSET_BIN add BADIP $IP || echo "Warning when adding $IP"
-			$IPSET_BIN add ${IPSET_NAME} $IP 
-		done < "$NEW_IPS"
-		
+		if [ -n "$NEW_ENTRIES" ]; then
+			$LOGGER_BIN $LOGGER_OPTS "Adding "$(echo "$NEW_ENTRIES" | wc -l)" new entries to ipset ${IPSET_NAME}"
+			while read IP; do
+				#$IPSET_BIN add BADIP $IP || echo "Warning when adding $IP"
+				$IPSET_BIN add ${IPSET_NAME} $IP 
+			done <<< "$NEW_ENTRIES"
+		fi
+
 	else
 		# use iptables for ranges and if ipset is not available
 			
 		### get old blocked entries
-		FILE2=$(mktemp -t block_badips.oldentries.XXXXXX)
-		trap "rm -f ${FILE_IP4} ${FILE_IP6} ${FILE_RANGES4} ${FILE_RANGES6} ${FILE2}" INT TERM EXIT
 		# export all rules with comment "BADIP" and replace -A (add) with -D (delete)
-		$IPTABLES_SAVE_BIN  | grep -e "--comment ${IPSET_NAME}" | grep -v -e '--match-set' | sed 's/-A/-D/' | sort > "$FILE2"
-		$LOGGER_BIN $LOGGER_OPTS "Found "$(wc -l < $FILE2)" old entries in iptables for ${IPSET_FAMILY}"
+		CURRENT_RULES=$($IPTABLES_SAVE_BIN  | { grep -e "--comment ${IPSET_NAME}" || true ; } |  grep -v -e '--match-set' || true )
+		if [ -n "$CURRENT_RULES" ]; then
+			$LOGGER_BIN $LOGGER_OPTS "Found "$(echo "$CURRENT_RULES" | wc -l )" entries in iptables for ${IPSET_FAMILY}"
+		fi
+
+		# get format of old rule (exact rule must be given to iptables as argument)
+		FMT=$(echo "$CURRENT_RULES" | head -n 1 | sed 's/-A /-D /')
+		
+		# get currently blocked IPs/ranges
+		CURRENT_ENTRIES=$(echo "$CURRENT_RULES" | grep -oE '((([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}))(/[1-9][0-9]?)?' | sort)
 		
 		### list of ips that are not considered bad any more
-		OLD_IPS=$(mktemp -t block_badips.oldips.XXXXXX)
-		trap "rm -f ${FILE_IP4} ${FILE_IP6} ${FILE_RANGES4} ${FILE_RANGES6} ${FILE2} ${OLD_IPS}" INT TERM EXIT
-		comm -13 <(sort $FILE) <(grep -oE '((([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}))(/[1-9][0-9]?)?' $FILE2) > $OLD_IPS
+		OUTDATED_ENTRIES=$(comm -13 <(echo "$FETCHED_ENTRIES") <(echo "$CURRENT_ENTRIES"))
 
 		### list of ips that are new and should be blocked
-		NEW_IPS=$(mktemp -t block_badips.newips.XXXXXX)
-		trap "rm -rf ${FILE_IP4} ${FILE_IP6} ${FILE_RANGES4} ${FILE_RANGES6} ${FILE2} ${OLD_IPS} ${NEW_IPS}" INT TERM EXIT
-		comm -23 <(sort $FILE) <(grep -oE '((([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}))(/[1-9][0-9]?)?' $FILE2) > $NEW_IPS
-		
-		# get format of old rule (exact rule must be given to iptables as argument)
-		FMT=$(head -n 1 $FILE2)
+		NEW_ENTRIES=$(comm -23 <(echo "$FETCHED_ENTRIES") <(echo "$CURRENT_ENTRIES"))
 		
 		### delete old rules, that are not needed any more
-		$LOGGER_BIN $LOGGER_OPTS "Removing "$(wc -l < $OLD_IPS )" old entries from iptables for ${IPSET_FAMILY}"
-		while read IP; do
-			$IPTABLES_BIN -w $(echo $FMT | sed -r "s!((([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}))(/[1-9][0-9]?)?!$IP!")
-		done < "$OLD_IPS"
-		
+		if [ -n "$OUTDATED_ENTRIES" ]; then
+			$LOGGER_BIN $LOGGER_OPTS "Removing "$(echo "$OUTDATED_ENTRIES" | wc -l)" outdated entries from iptables for ${IPSET_FAMILY}"
+			while read IP; do
+				$IPTABLES_BIN -w $(echo $FMT | sed -r "s!((([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}))(/[1-9][0-9]?)?!$IP!")
+			done <<< "$OUTDATED_ENTRIES"
+		fi
+
 		### add new IPs that should be blocked
-		$LOGGER_BIN $LOGGER_OPTS "Adding "$(wc -l < $NEW_IPS)" new entries from iptables for ${IPSET_FAMILY}"
-		while read IP; do
-			$IPTABLES_BIN -w -I INPUT -s $IP -j DROP -m comment --comment "${IPSET_NAME}"
-		done < "$NEW_IPS"
-		
+		if [ -n "$NEW_ENTRIES" ]; then
+			$LOGGER_BIN $LOGGER_OPTS "Adding "$(echo "$NEW_ENTRIES" | wc -l)" new entries from iptables for ${IPSET_FAMILY}"
+			while read IP; do
+				$IPTABLES_BIN -w -I INPUT -s $IP -j DROP -m comment --comment "${IPSET_NAME}"
+			done <<< "$NEW_ENTRIES"
+		fi
 	fi
 }
 
-# add IPv4
-FILE=$FILE_IP4
+
+# split into IPv4 and IPv6 addresses and ranges (IPs are faster with ipset and ranges are easier to handle with iptables)
+# Hint 1: || true is necessary for grep  to not trigger errexit when grep operates on empty data
+# Hint 2: Curly brackets are required since | binds tighter than ||
+
+# add IPv4 addresses
+FETCHED_ENTRIES=$({ grep -v ":" ${FILE} || true ; } | grep -v "/" || true)
 IPTABLES_BIN=$IP4TABLES_BIN
 FORCE_IPTABLES=""
 update
 
 # add IPv4 ranges
-FILE=$FILE_RANGES4
+FETCHED_ENTRIES=$({ grep -v ":" ${FILE} || true ; } | grep "/" || true)
+# add IPv4 ranges
 IPTABLES_BIN=$IP4TABLES_BIN
 FORCE_IPTABLES="y"
 update
 
-
-# add IPv6
-FILE=$FILE_IP6
+# add IPv6 addresses
+FETCHED_ENTRIES=$({ grep ":" ${FILE} || true ; } | grep -v "/" || true)
 IPTABLES_BIN=$IP6TABLES_BIN
 FORCE_IPTABLES=""
 update
 
 # add IPv6 ranges
-FILE=$FILE_RANGES6
+FETCHED_ENTRIES=$({ grep ":" ${FILE} || true ; } | grep "/" || true)
 IPTABLES_BIN=$IP6TABLES_BIN
 FORCE_IPTABLES="y"
 update
 
 ### end of script
-$LOGGER_BIN $LOGGER_OPTS "Finished applying iptables rules"
+$LOGGER_BIN $LOGGER_OPTS "Finished applying block rules"
 
 echo $(date -Is) - updated >> ${STATUS_FILE}
 
