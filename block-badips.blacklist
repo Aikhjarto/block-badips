@@ -1,0 +1,5 @@
+# blacklist file for block-backip
+#
+# each IPv4 adress which is in a separate line will always be blocked by 
+# block_badips.sh, even it is not on the retrieved blacklist.
+
