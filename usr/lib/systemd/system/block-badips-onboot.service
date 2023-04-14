@@ -9,8 +9,8 @@ After=network.target
 
 [Service]
 Type=oneshot
-Environment=BADIPS_NO_STDERR=1
-ExecStart=/usr/sbin/block_badips.sh
+EnvironmentFile=/etc/block-badips.conf
+ExecStart=/usr/sbin/block-badips.sh
 
 [Install]
 WantedBy=multi-user.target

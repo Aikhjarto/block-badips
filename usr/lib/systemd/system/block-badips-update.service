@@ -1,0 +1,9 @@
+[Unit]
+Description=Service for running block-badips.sh script periodically
+After=network.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/block-badips.conf
+ExecStart=/usr/sbin/block-badips.sh
+

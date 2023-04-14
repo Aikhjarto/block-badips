@@ -4,7 +4,6 @@ Description=Runs Block Badips periodically
 [Timer]
 OnBootSec=1h
 OnUnitActiveSec=1h
-Unit=block-badips-timer.service
 
 [Install]
 WantedBy=timers.target

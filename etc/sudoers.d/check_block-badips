@@ -1,0 +1,3 @@
+Cmnd_Alias NAGIOS_CHK_BADIPS = /usr/lib/nagios/plugins/check_block_badips *
+nagios ALL=(ALL) NOPASSWD: NAGIOS_CHK_BADIPS
+
