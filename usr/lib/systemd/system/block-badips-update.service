@@ -2,8 +2,14 @@
 Description=Service for running block-badips.sh script periodically
 After=network.target
 
+StartLimitIntervalSec=1500
+StartLimitBurst=10
+
 [Service]
 Type=oneshot
 EnvironmentFile=/etc/block-badips.conf
 ExecStart=/usr/sbin/block-badips.sh
+
+Restart=on-failure
+RestartSec=120s
 

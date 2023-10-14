@@ -11,6 +11,8 @@ After=network.target
 Type=oneshot
 EnvironmentFile=/etc/block-badips.conf
 ExecStart=/usr/sbin/block-badips.sh
+Restart=on-failure
+RestartSec=60
 
 [Install]
 WantedBy=multi-user.target
