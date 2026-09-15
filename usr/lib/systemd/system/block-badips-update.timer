@@ -2,8 +2,14 @@
 Description=Runs Block Badips periodically
 
 [Timer]
-OnBootSec=1h
-OnUnitActiveSec=1h
+# Run hourly but not between 2 am and 6 am, as then backups are done
+OnBootSec=50
+OnCalendar=*-*-* 00:00:00
+OnCalendar=*-*-* 01:00:00
+OnCalendar=*-*-* 06..23:00:00
+
+RandomizedDelaySec=10min
+Persistent=true
 
 [Install]
 WantedBy=timers.target

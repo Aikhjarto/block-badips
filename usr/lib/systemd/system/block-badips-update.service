@@ -8,6 +8,8 @@ StartLimitBurst=10
 [Service]
 Type=oneshot
 EnvironmentFile=/etc/block-badips.conf
+StateDirectory=block-badips
+RuntimeDirectory=block-badips
 ExecStart=/usr/sbin/block-badips.sh
 
 Restart=on-failure
