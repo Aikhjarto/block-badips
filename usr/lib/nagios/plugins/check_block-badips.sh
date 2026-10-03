@@ -21,9 +21,12 @@ CRIT_ENTRIES=1
 WARN_AGE_S=21600
 CRIT_AGE_S=43200
 WARN_FILL_PERCENT=90
-STATUS_FILE=/var/lib/block-badips/status
+# Status file written by block-badips.sh. It can be changed for testing via the
+# environment only, not via an option: the plugin runs as root via sudo, which
+# resets the environment, so the nagios user cannot make it read other files.
+STATUS_FILE=${BADIPS_STATUS_FILE:-/var/lib/block-badips/status}
 
-USAGE="$(basename "$0") [-h] [-w entries] [-c entries] [-W seconds] [-C seconds] [-f percent] [-s status_file]"
+USAGE="$(basename "$0") [-h] [-w entries] [-c entries] [-W seconds] [-C seconds] [-f percent]"
 
 usage () {
 	echo "UNKNOWN - usage: ${USAGE}"
@@ -45,23 +48,22 @@ help () {
 		  -C seconds  CRITICAL if the last successful update is older (default: ${CRIT_AGE_S})
 		  -f percent  WARNING if an ipset is filled to more than this percentage
 		              of its maxelem (default: ${WARN_FILL_PERCENT})
-		  -s file     status file written by block-badips.sh
-		              (default: ${STATUS_FILE})
 
 		Additionally CRITICAL is reported if an ipset contains entries but no
-		iptables rule uses it, or if no successful update is found in the status file.
+		iptables rule uses it, or if no successful update is found in the status file
+		${STATUS_FILE}, which can be changed with the environment variable
+		BADIPS_STATUS_FILE.
 	EOF
 	exit $NAG_UNKNOWN
 }
 
-while getopts ":hw:c:W:C:f:s:" OPT; do
+while getopts ":hw:c:W:C:f:" OPT; do
 	case "$OPT" in
 		w) WARN_ENTRIES=$OPTARG ;;
 		c) CRIT_ENTRIES=$OPTARG ;;
 		W) WARN_AGE_S=$OPTARG ;;
 		C) CRIT_AGE_S=$OPTARG ;;
 		f) WARN_FILL_PERCENT=$OPTARG ;;
-		s) STATUS_FILE=$OPTARG ;;
 		h) help ;;
 		*) usage ;;
 	esac
