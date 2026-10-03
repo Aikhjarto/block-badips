@@ -126,178 +126,162 @@ PREFIX_REGEX='(/[1-9][0-9]?)?'
 # a line of the downloaded list: a single address or range
 LIST_ENTRY_REGEX="^${IP_REGEX}${PREFIX_REGEX}\$"
 
-if [[ -r "${URL}" ]]; then
-	"$LOGGER_BIN" $LOGGER_OPTS "Fetching list of bad IPs from file ${URL}"
-	FILE=$(mktemp -t block_badips.new.XXXXXX)
-	TMP_FILES+=("$FILE")
-	cat "${URL}" > "${FILE}"
-
-	if grep -v -q -E "${LIST_ENTRY_REGEX}" "${FILE}"; then
-		# something else than an IP or range is found
-		"$LOGGER_BIN" $LOGGER_OPTS_WARN "${URL} contained something else than a list of IP addresses and ranges"
-		# uncomment mail for debugging, productive script shouldn't depend on mail
-		# mail -s "badip erronous file" root < "${FILE}"
-		date -Is >> "${STATUS_FILE}"
-		cat "${FILE}" >> "${STATUS_FILE}"
-		exit 1
-	fi
-else
-	# check format of user supplied data to avoid parameter injection to curl/wget
-	regex='^(https?|ftp|file)://[-A-Za-z0-9\+&@#/%?=~_|!:,.;]*[-A-Za-z0-9\+&@#/%=~_|]'
-	if [[ ! ${URL} =~ $regex ]]; then
-		"$LOGGER_BIN" $LOGGER_OPTS_ERROR "Supplied URL \"${URL}\" is malformatted."
-		exit 1
-	fi
-	regex=" |'"$'|\t'
-	if [[ "${BADIPS_USER}" =~ $regex ]]; then
-		"$LOGGER_BIN" $LOGGER_OPTS_ERROR "Username BADIPS_USER is \"${BADIPS_USER}\" and contains a whitespace, which is not supported."
-		exit 1
-	fi
-	if [[ "${BADIPS_PASSWORD}" =~ $regex ]]; then
-		"$LOGGER_BIN" $LOGGER_OPTS_ERROR "Username BADIPS_PASSWORD is \"${BADIPS_PASSWORD}\" and contains a whitespace, which is not supported."
-		exit 1
-	fi
-
-	# Pass credentials via a netrc file instead of on the command line, where
-	# they would be readable by any local user through /proc/<pid>/cmdline or
-	# `ps`.
-	NETRC_FILE=""
-	if [ -n "${BADIPS_USER}" ] || [ -n "${BADIPS_PASSWORD}" ]; then
-		NETRC_FILE=$(mktemp -t block_badips.netrc.XXXXXX)
-		TMP_FILES+=("$NETRC_FILE")
-		chmod 600 "${NETRC_FILE}"
-		URL_HOST=${URL#*://}
-		URL_HOST=${URL_HOST%%/*}
-		URL_HOST=${URL_HOST%%:*}
-		printf 'machine %s\nlogin %s\npassword %s\n' "${URL_HOST}" "${BADIPS_USER}" "${BADIPS_PASSWORD}" > "${NETRC_FILE}"
-	fi
-
-	# count a failed download attempt and wait before the next one, if any
-	retry_later () {
-		N_DOWNLOAD_RETRY=$((N_DOWNLOAD_RETRY-1))
-		if [ ${N_DOWNLOAD_RETRY} -gt 0 ]; then
-			sleep ${DOWNLOAD_RETRY_WAIT_S}
-		fi
-	}
-
-	# download IP list
-	while [ ${N_DOWNLOAD_RETRY} -gt 0 ]; do
-		### download
-		"$LOGGER_BIN" $LOGGER_OPTS "Fetching list of bad IPs from ${URL} using username \"${BADIPS_USER}\""
+# Fetch the list from URL into a new temporary file, whose name is stored in
+# FILE. Returns 1 if no valid list could be fetched.
+fetch_list () {
+	if [[ -r "${URL}" ]]; then
+		"$LOGGER_BIN" $LOGGER_OPTS "Fetching list of bad IPs from file ${URL}"
 		FILE=$(mktemp -t block_badips.new.XXXXXX)
 		TMP_FILES+=("$FILE")
-		# Try curl or wget to download.
-		set +e
-		if [ "${DOWNLOAD_PROGRAM}" = "curl" ]; then
-			# --fail turns HTTP errors into a non-zero exit code instead of saving the error page
-			if [ -n "${NETRC_FILE}" ]; then
-				r=$(curl -s -S --fail --max-time "${DOWNLOAD_TIMEOUT_S}" --netrc-file "${NETRC_FILE}" "${URL}" -o "${FILE}" 2>&1)
-			else
-				r=$(curl -s -S --fail --max-time "${DOWNLOAD_TIMEOUT_S}" "${URL}" -o "${FILE}" 2>&1)
-			fi
-		else
-			if [ -n "${NETRC_FILE}" ]; then
-				r=$(wget -q --timeout="${DOWNLOAD_TIMEOUT_S}" --tries=1 --netrc-file="${NETRC_FILE}" -O "${FILE}" "${URL}" 2>&1)
-			else
-				r=$(wget -q --timeout="${DOWNLOAD_TIMEOUT_S}" --tries=1 -O "${FILE}" "${URL}" 2>&1)
-			fi
-		fi
-		ret=$?
-		set -e
-		if [ ${ret} -ne 0 ]; then
-			"$LOGGER_BIN" $LOGGER_OPTS_WARN "Download of ${URL} using ${DOWNLOAD_PROGRAM} and username \"${BADIPS_USER}\" failed with exit code ${ret} and message \"${r}\""
-			retry_later
-			continue
-		else
-			"$LOGGER_BIN" $LOGGER_OPTS "Got "$(wc -l < "$FILE" ) " lines"
-		fi
+		cat "${URL}" > "${FILE}"
 
-		### input check
-		# Check downloaded file (should contain a single IP adresses in each line).
-		# In the case of an error, $FILE is either empty or an HTML page
-		# Hint: grep returns 1 or true if there is no match in the file
-		if [ ! -s "${FILE}" ]; then
-			# file does not exist or is empty
-			"$LOGGER_BIN" $LOGGER_OPTS_WARN "${URL} sent empty or no file"
-			retry_later
-			continue
-		elif grep -q -i HTML "${FILE}"; then
-			# file contains HTML code
-			if grep -q "<head><title>504 Gateway Time-out</title></head>" "${FILE}"; then
-				"$LOGGER_BIN" $LOGGER_OPTS_WARN "${URL} cannot be fetched because of 504 Gateway Time-out"
-				echo "$(date -Is) - ERROR 504" >> "${STATUS_FILE}"
-			elif grep -q "<head><title>502 Bad Gateway</title></head>" "${FILE}"; then
-				"$LOGGER_BIN" $LOGGER_OPTS_WARN "${URL} cannot be fetched because of 502 Bad Gateway"
-				echo "$(date -Is) - ERROR 502" >> "${STATUS_FILE}"
-			else
-				# if there was a problem, sometimes a HTML file containing an error message is sent
-				"$LOGGER_BIN" $LOGGER_OPTS_WARN "${URL} got HTML file instead of text file, see ${STATUS_FILE} for details."
-				# uncomment mail for debugging, productive script shouldn't depend on mail
-				#mail -s "add badips error" root < "${FILE}"
-				date -Is >> "${STATUS_FILE}"
-				cat "${FILE}" >> "${STATUS_FILE}"
-			fi
-			retry_later
-			continue
-		elif grep -v -q -E "${LIST_ENTRY_REGEX}" "$FILE"; then
+		if grep -v -q -E "${LIST_ENTRY_REGEX}" "${FILE}"; then
 			# something else than an IP or range is found
 			"$LOGGER_BIN" $LOGGER_OPTS_WARN "${URL} contained something else than a list of IP addresses and ranges"
 			# uncomment mail for debugging, productive script shouldn't depend on mail
 			# mail -s "badip erronous file" root < "${FILE}"
 			date -Is >> "${STATUS_FILE}"
 			cat "${FILE}" >> "${STATUS_FILE}"
-			retry_later
-			continue
-		else
-			# everything fine, continue outside loop
-			break
+			return 1
 		fi
-	done
+	else
+		# check format of user supplied data to avoid parameter injection to curl/wget
+		regex='^(https?|ftp|file)://[-A-Za-z0-9\+&@#/%?=~_|!:,.;]*[-A-Za-z0-9\+&@#/%=~_|]'
+		if [[ ! ${URL} =~ $regex ]]; then
+			"$LOGGER_BIN" $LOGGER_OPTS_ERROR "Supplied URL \"${URL}\" is malformatted."
+			return 1
+		fi
+		regex=" |'"$'|\t'
+		if [[ "${BADIPS_USER}" =~ $regex ]]; then
+			"$LOGGER_BIN" $LOGGER_OPTS_ERROR "Username BADIPS_USER is \"${BADIPS_USER}\" and contains a whitespace, which is not supported."
+			return 1
+		fi
+		if [[ "${BADIPS_PASSWORD}" =~ $regex ]]; then
+			"$LOGGER_BIN" $LOGGER_OPTS_ERROR "Username BADIPS_PASSWORD is \"${BADIPS_PASSWORD}\" and contains a whitespace, which is not supported."
+			return 1
+		fi
 
-	# quit if no valid file could be retrieved
-	if [ ${N_DOWNLOAD_RETRY} -le 0 ]; then
-		"$LOGGER_BIN" $LOGGER_OPTS_ERROR "ERROR: ${URL} does not provide list of IPs after several tries. Giving up now. Systemlog should have more information, e.g. journalctl SYSLOG_IDENTIFIER=block_badips or grep block_badips /var/log/messages"
-		exit 1
+		# Pass credentials via a netrc file instead of on the command line, where
+		# they would be readable by any local user through /proc/<pid>/cmdline or
+		# `ps`.
+		NETRC_FILE=""
+		if [ -n "${BADIPS_USER}" ] || [ -n "${BADIPS_PASSWORD}" ]; then
+			NETRC_FILE=$(mktemp -t block_badips.netrc.XXXXXX)
+			TMP_FILES+=("$NETRC_FILE")
+			chmod 600 "${NETRC_FILE}"
+			URL_HOST=${URL#*://}
+			URL_HOST=${URL_HOST%%/*}
+			URL_HOST=${URL_HOST%%:*}
+			printf 'machine %s\nlogin %s\npassword %s\n' "${URL_HOST}" "${BADIPS_USER}" "${BADIPS_PASSWORD}" > "${NETRC_FILE}"
+		fi
+
+		# count a failed download attempt and wait before the next one, if any
+		retry_later () {
+			N_DOWNLOAD_RETRY=$((N_DOWNLOAD_RETRY-1))
+			if [ ${N_DOWNLOAD_RETRY} -gt 0 ]; then
+				sleep ${DOWNLOAD_RETRY_WAIT_S}
+			fi
+		}
+
+		# download IP list
+		while [ ${N_DOWNLOAD_RETRY} -gt 0 ]; do
+			### download
+			"$LOGGER_BIN" $LOGGER_OPTS "Fetching list of bad IPs from ${URL} using username \"${BADIPS_USER}\""
+			FILE=$(mktemp -t block_badips.new.XXXXXX)
+			TMP_FILES+=("$FILE")
+			# Try curl or wget to download.
+			set +e
+			if [ "${DOWNLOAD_PROGRAM}" = "curl" ]; then
+				# --fail turns HTTP errors into a non-zero exit code instead of saving the error page
+				if [ -n "${NETRC_FILE}" ]; then
+					r=$(curl -s -S --fail --max-time "${DOWNLOAD_TIMEOUT_S}" --netrc-file "${NETRC_FILE}" "${URL}" -o "${FILE}" 2>&1)
+				else
+					r=$(curl -s -S --fail --max-time "${DOWNLOAD_TIMEOUT_S}" "${URL}" -o "${FILE}" 2>&1)
+				fi
+			else
+				if [ -n "${NETRC_FILE}" ]; then
+					r=$(wget -q --timeout="${DOWNLOAD_TIMEOUT_S}" --tries=1 --netrc-file="${NETRC_FILE}" -O "${FILE}" "${URL}" 2>&1)
+				else
+					r=$(wget -q --timeout="${DOWNLOAD_TIMEOUT_S}" --tries=1 -O "${FILE}" "${URL}" 2>&1)
+				fi
+			fi
+			ret=$?
+			set -e
+			if [ ${ret} -ne 0 ]; then
+				"$LOGGER_BIN" $LOGGER_OPTS_WARN "Download of ${URL} using ${DOWNLOAD_PROGRAM} and username \"${BADIPS_USER}\" failed with exit code ${ret} and message \"${r}\""
+				retry_later
+				continue
+			else
+				"$LOGGER_BIN" $LOGGER_OPTS "Got "$(wc -l < "$FILE" ) " lines"
+			fi
+
+			### input check
+			# Check downloaded file (should contain a single IP adresses in each line).
+			# In the case of an error, $FILE is either empty or an HTML page
+			# Hint: grep returns 1 or true if there is no match in the file
+			if [ ! -s "${FILE}" ]; then
+				# file does not exist or is empty
+				"$LOGGER_BIN" $LOGGER_OPTS_WARN "${URL} sent empty or no file"
+				retry_later
+				continue
+			elif grep -q -i HTML "${FILE}"; then
+				# file contains HTML code
+				if grep -q "<head><title>504 Gateway Time-out</title></head>" "${FILE}"; then
+					"$LOGGER_BIN" $LOGGER_OPTS_WARN "${URL} cannot be fetched because of 504 Gateway Time-out"
+					echo "$(date -Is) - ERROR 504" >> "${STATUS_FILE}"
+				elif grep -q "<head><title>502 Bad Gateway</title></head>" "${FILE}"; then
+					"$LOGGER_BIN" $LOGGER_OPTS_WARN "${URL} cannot be fetched because of 502 Bad Gateway"
+					echo "$(date -Is) - ERROR 502" >> "${STATUS_FILE}"
+				else
+					# if there was a problem, sometimes a HTML file containing an error message is sent
+					"$LOGGER_BIN" $LOGGER_OPTS_WARN "${URL} got HTML file instead of text file, see ${STATUS_FILE} for details."
+					# uncomment mail for debugging, productive script shouldn't depend on mail
+					#mail -s "add badips error" root < "${FILE}"
+					date -Is >> "${STATUS_FILE}"
+					cat "${FILE}" >> "${STATUS_FILE}"
+				fi
+				retry_later
+				continue
+			elif grep -v -q -E "${LIST_ENTRY_REGEX}" "$FILE"; then
+				# something else than an IP or range is found
+				"$LOGGER_BIN" $LOGGER_OPTS_WARN "${URL} contained something else than a list of IP addresses and ranges"
+				# uncomment mail for debugging, productive script shouldn't depend on mail
+				# mail -s "badip erronous file" root < "${FILE}"
+				date -Is >> "${STATUS_FILE}"
+				cat "${FILE}" >> "${STATUS_FILE}"
+				retry_later
+				continue
+			else
+				# everything fine, continue outside loop
+				break
+			fi
+		done
+
+		# quit if no valid file could be retrieved
+		if [ ${N_DOWNLOAD_RETRY} -le 0 ]; then
+			"$LOGGER_BIN" $LOGGER_OPTS_ERROR "ERROR: ${URL} does not provide list of IPs after several tries. Giving up now. Systemlog should have more information, e.g. journalctl SYSLOG_IDENTIFIER=block_badips or grep block_badips /var/log/messages"
+			return 1
+		fi
 	fi
-fi
+}
 
-# assert: $FILE contains a single IPv4 or IPv6 adresses or range in each line
+# Set BLOCK_RULE to the rule blocking the set of the given address family (4 or
+# 6): drop everything in the set except for the allowed addresses. The raw table
+# is processed before connection tracking and routing, so this is cheap and also
+# covers traffic forwarded to VMs or containers.
+block_rule () {
+	BLOCK_RULE=(PREROUTING -m set --match-set "BADIP$1" src -m set ! --match-set "BADIP$1_ALLOW" src -m comment --comment "BADIP$1" -j DROP)
+}
 
-# Ignore ranges that are too broad. A faulty list containing e.g. 0.0.0.0/1 would
-# otherwise block half of the internet, likely including the admin.
-BROAD_FILE=$(mktemp -t block_badips.broad.XXXXXX)
-FILE_TMP=$(mktemp -t block_badips.prefilter.XXXXXX)
-TMP_FILES+=("$BROAD_FILE" "$FILE_TMP")
-awk -v min4="${BADIPS_MIN_PREFIX4}" -v min6="${BADIPS_MIN_PREFIX6}" -v broad="${BROAD_FILE}" '
-	{
-		slash = index($0, "/")
-		min = index($0, ":") ? min6 : min4
-		if (slash && substr($0, slash + 1) + 0 < min) print > broad; else print
-	}' "${FILE}" > "${FILE_TMP}"
-mv "${FILE_TMP}" "${FILE}"
-if [ -s "${BROAD_FILE}" ]; then
-	"$LOGGER_BIN" $LOGGER_OPTS_WARN "Ignoring $(wc -l < "${BROAD_FILE}") ranges broader than /${BADIPS_MIN_PREFIX4} (IPv4) or /${BADIPS_MIN_PREFIX6} (IPv6): $(head -n 20 "${BROAD_FILE}" | tr '\n' ' ')"
-fi
-
-# add IPs and ranges from blacklist file
-if [ -s "${BLACKLIST_FILE}" ]; then
-	# Hint: grep exits with 1 if there is no IP in BLACKLIST_FILE, hence || true
-	grep -E "${LIST_ENTRY_REGEX}" "${BLACKLIST_FILE}" >> "${FILE}" || true
-fi
-
-# Addresses and ranges that are never blocked go into an allow set, which the
-# blocking rule excludes. In contrast to removing entries from the list, this
-# also exempts them if they are part of a larger blocked range.
-ALLOW_FILE=$(mktemp -t block_badips.allow.XXXXXX)
-TMP_FILES+=("$ALLOW_FILE")
-# unspecified, private, shared (CGNAT), loopback, link-local, multicast and reserved addresses
-printf '%s\n' 0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16 \
-	224.0.0.0/4 240.0.0.0/4 > "${ALLOW_FILE}"
-# unspecified, loopback, IPv4-mapped, unique local, site-local, link-local and multicast addresses
-printf '%s\n' ::/128 ::1/128 ::ffff:0:0/96 fc00::/7 fec0::/10 fe80::/10 ff00::/8 >> "${ALLOW_FILE}"
-if [ -s "${WHITELIST_FILE}" ]; then
-	grep -E "${LIST_ENTRY_REGEX}" "${WHITELIST_FILE}" >> "${ALLOW_FILE}" || true
-fi
+# check if the blocking rule of the given address family (4 or 6) is present
+block_rule_present () {
+	local iptables_bin=$IP4TABLES_BIN
+	if [ "$1" = 6 ]; then
+		iptables_bin=$IP6TABLES_BIN
+	fi
+	block_rule "$1"
+	"$iptables_bin" -w -t raw -C "${BLOCK_RULE[@]}" >/dev/null 2>&1
+}
 
 # print the lines of stdin that belong to the given address family (4 or 6)
 # Hint: || true is necessary for grep to not trigger errexit when there is no match
@@ -398,18 +382,81 @@ apply_family () {
 	load_set "$name" "$family" "$block_file"
 	load_set "${name}_ALLOW" "$family" "$allow_file"
 
-	# Drop everything in the set except for the allowed addresses; the rule is
-	# added only once. The raw table is processed before connection tracking and
-	# routing, so this is cheap and also covers traffic forwarded to VMs or
-	# containers.
-	local rule=(PREROUTING -m set --match-set "$name" src -m set ! --match-set "${name}_ALLOW" src -m comment --comment "$name" -j DROP)
-	if ! "$iptables_bin" -w -t raw -C "${rule[@]}" >/dev/null 2>&1; then
-		"$iptables_bin" -w -t raw -I "${rule[@]}"
+	# the rule is added only once
+	if ! block_rule_present "$v"; then
+		"$iptables_bin" -w -t raw -I "${BLOCK_RULE[@]}"
 	fi
 }
 
-apply_family 4
-apply_family 6
+# Block the entries of the given list, after applying the blacklist, whitelist
+# and sanity checks to a copy of it.
+apply_list () {
+	local FILE
+	FILE=$(mktemp -t block_badips.list.XXXXXX)
+	TMP_FILES+=("$FILE")
+	cp "$1" "$FILE"
+
+	# assert: $FILE contains a single IPv4 or IPv6 adresses or range in each line
+
+	# Ignore ranges that are too broad. A faulty list containing e.g. 0.0.0.0/1 would
+	# otherwise block half of the internet, likely including the admin.
+	BROAD_FILE=$(mktemp -t block_badips.broad.XXXXXX)
+	FILE_TMP=$(mktemp -t block_badips.prefilter.XXXXXX)
+	TMP_FILES+=("$BROAD_FILE" "$FILE_TMP")
+	awk -v min4="${BADIPS_MIN_PREFIX4}" -v min6="${BADIPS_MIN_PREFIX6}" -v broad="${BROAD_FILE}" '
+		{
+			slash = index($0, "/")
+			min = index($0, ":") ? min6 : min4
+			if (slash && substr($0, slash + 1) + 0 < min) print > broad; else print
+		}' "${FILE}" > "${FILE_TMP}"
+	mv "${FILE_TMP}" "${FILE}"
+	if [ -s "${BROAD_FILE}" ]; then
+		"$LOGGER_BIN" $LOGGER_OPTS_WARN "Ignoring $(wc -l < "${BROAD_FILE}") ranges broader than /${BADIPS_MIN_PREFIX4} (IPv4) or /${BADIPS_MIN_PREFIX6} (IPv6): $(head -n 20 "${BROAD_FILE}" | tr '\n' ' ')"
+	fi
+
+	# add IPs and ranges from blacklist file
+	if [ -s "${BLACKLIST_FILE}" ]; then
+		# Hint: grep exits with 1 if there is no IP in BLACKLIST_FILE, hence || true
+		grep -E "${LIST_ENTRY_REGEX}" "${BLACKLIST_FILE}" >> "${FILE}" || true
+	fi
+
+	# Addresses and ranges that are never blocked go into an allow set, which the
+	# blocking rule excludes. In contrast to removing entries from the list, this
+	# also exempts them if they are part of a larger blocked range.
+	ALLOW_FILE=$(mktemp -t block_badips.allow.XXXXXX)
+	TMP_FILES+=("$ALLOW_FILE")
+	# unspecified, private, shared (CGNAT), loopback, link-local, multicast and reserved addresses
+	printf '%s\n' 0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16 \
+		224.0.0.0/4 240.0.0.0/4 > "${ALLOW_FILE}"
+	# unspecified, loopback, IPv4-mapped, unique local, site-local, link-local and multicast addresses
+	printf '%s\n' ::/128 ::1/128 ::ffff:0:0/96 fc00::/7 fec0::/10 fe80::/10 ff00::/8 >> "${ALLOW_FILE}"
+	if [ -s "${WHITELIST_FILE}" ]; then
+		grep -E "${LIST_ENTRY_REGEX}" "${WHITELIST_FILE}" >> "${ALLOW_FILE}" || true
+	fi
+
+	apply_family 4
+	apply_family 6
+
+}
+
+# The last valid list, which is applied right away if the blocking rules are
+# missing, e.g. after a reboot or a restart of the firewall. Otherwise nothing
+# would be blocked until the download succeeds, which may take a while or fail,
+# e.g. if the network is not up yet.
+CACHE_FILE="${STATE_DIRECTORY}/list"
+if [ -s "${CACHE_FILE}" ] && ! { block_rule_present 4 && block_rule_present 6; }; then
+	"$LOGGER_BIN" $LOGGER_OPTS "Applying the last valid list from ${CACHE_FILE} until the current one is fetched"
+	apply_list "${CACHE_FILE}"
+fi
+
+if ! fetch_list; then
+	exit 1
+fi
+apply_list "${FILE}"
+
+# store the list atomically, so an interrupted run cannot leave a truncated cache behind
+cp "${FILE}" "${CACHE_FILE}.new"
+mv "${CACHE_FILE}.new" "${CACHE_FILE}"
 
 ### end of script
 "$LOGGER_BIN" $LOGGER_OPTS "Finished applying block rules"
