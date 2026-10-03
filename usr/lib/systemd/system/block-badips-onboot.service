@@ -1,6 +1,6 @@
 [Unit]
-Description=Applies iptables rules to block known IPs doing nasty stuff"
-Documentation=https://badips.com
+Description=Applies iptables rules to block known IPs doing nasty stuff
+Documentation=https://github.com/Aikhjarto/block-badips
 PartOf=SuSEfirewall2.service firewalld.service
 # must not run in parallel to service that modify iptables without "-w"
 Before=fail2ban.service

@@ -1,5 +1,6 @@
 [Unit]
 Description=Service for running block-badips.sh script periodically
+Documentation=https://github.com/Aikhjarto/block-badips
 After=network.target
 
 StartLimitIntervalSec=1500

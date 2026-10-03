@@ -1,5 +1,6 @@
 [Unit]
 Description=Runs Block Badips periodically
+Documentation=https://github.com/Aikhjarto/block-badips
 
 [Timer]
 # Run hourly but not between 2 am and 6 am, as then backups are done
