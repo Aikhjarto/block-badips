@@ -18,6 +18,7 @@
 # Requirements
 #	* iptables
 #	* ipset or iptables-save
+#	* iptables-restore, ip6tables-restore
 #	* curl or wget
 #	* logger
 #	* mktemp, wc, sed, grep, sort, comm, flock
@@ -33,6 +34,8 @@ IP4TABLES_BIN=/usr/sbin/iptables
 IP4TABLES_SAVE_BIN=/usr/sbin/iptables-save
 IP6TABLES_BIN=/usr/sbin/ip6tables
 IP6TABLES_SAVE_BIN=/usr/sbin/ip6tables-save
+IP4TABLES_RESTORE_BIN=/usr/sbin/iptables-restore
+IP6TABLES_RESTORE_BIN=/usr/sbin/ip6tables-restore
 LOGGER_BIN=/usr/bin/logger
 IPSET_BIN=/usr/sbin/ipset
 WHITELIST_FILE=/etc/block-badips.whitelist
@@ -45,6 +48,7 @@ LOCK_FILE="${RUNTIME_DIRECTORY:-/run}/block-badips.lock"
 BADIPS_NO_STDERR=${BADIPS_NO_STDERR:-""}
 N_DOWNLOAD_RETRY=5
 DOWNLOAD_RETRY_WAIT_S=30
+IPTABLES_RESTORE_CHUNK=250
 
 type "$LOGGER_BIN"  >/dev/null 2>&1 || { echo >&2 "$LOGGER_BIN not found.  Aborting."; exit 1; }
 
@@ -61,7 +65,7 @@ fi
 # Fail fast with a clear log message instead of running into an obscure
 # error (or, with `set -o nounset`, an unbound-variable crash) deep inside
 # the script once a required binary turns out to be missing.
-for BIN in "$IP4TABLES_BIN" "$IP4TABLES_SAVE_BIN" "$IP6TABLES_BIN" "$IP6TABLES_SAVE_BIN"; do
+for BIN in "$IP4TABLES_BIN" "$IP4TABLES_SAVE_BIN" "$IP4TABLES_RESTORE_BIN" "$IP6TABLES_BIN" "$IP6TABLES_SAVE_BIN" "$IP6TABLES_RESTORE_BIN"; do
 	type "$BIN" >/dev/null 2>&1 || { "$LOGGER_BIN" $LOGGER_OPTS_ERROR "$BIN not found. Aborting."; exit 1; }
 done
 
@@ -271,10 +275,12 @@ update () {
 		IPSET_NAME=BADIP4
 		IPSET_FAMILY=inet
 		IPTABLES_SAVE_BIN=$IP4TABLES_SAVE_BIN
+		IPTABLES_RESTORE_BIN=$IP4TABLES_RESTORE_BIN
 	else
 		IPSET_NAME=BADIP6
 		IPSET_FAMILY=inet6
 		IPTABLES_SAVE_BIN=$IP6TABLES_SAVE_BIN
+		IPTABLES_RESTORE_BIN=$IP6TABLES_RESTORE_BIN
 	fi
 
 	### main part
@@ -302,26 +308,34 @@ update () {
 		### list of ips that are new and should be blocked
 		NEW_ENTRIES=$(comm -23 <(echo "$FETCHED_ENTRIES") <(echo "$CURRENT_ENTRIES"))
 
+		# Feed all deletions and additions to a single "ipset restore" instead of
+		# spawning one ipset process per entry, which is very slow for long lists.
+		# -exist ignores deleting a missing / adding an already present entry.
+		IPSET_BATCH=""
+
 		### delete old rules, that are not needed any more
 		if [ -n "$OUTDATED_ENTRIES" ]; then
 			"$LOGGER_BIN" $LOGGER_OPTS "Removing "$(echo "$OUTDATED_ENTRIES" | wc -l )" outdated entries from ipset ${IPSET_NAME}"
-			while read -r IP; do
-				#$IPSET_BIN del BADIP $IP || echo "Warning when deleting $IP"
-				"$IPSET_BIN" del "${IPSET_NAME}" "$IP"
-			done <<< "$OUTDATED_ENTRIES"
+			IPSET_BATCH+=$(sed "s/^/del ${IPSET_NAME} /" <<< "$OUTDATED_ENTRIES")$'\n'
 		fi
 
 		### add new IPs that should be blocked
 		if [ -n "$NEW_ENTRIES" ]; then
 			"$LOGGER_BIN" $LOGGER_OPTS "Adding "$(echo "$NEW_ENTRIES" | wc -l)" new entries to ipset ${IPSET_NAME}"
-			while read -r IP; do
-				#$IPSET_BIN add BADIP $IP || echo "Warning when adding $IP"
-				"$IPSET_BIN" add "${IPSET_NAME}" "$IP"
-			done <<< "$NEW_ENTRIES"
+			IPSET_BATCH+=$(sed "s/^/add ${IPSET_NAME} /" <<< "$NEW_ENTRIES")$'\n'
+		fi
+
+		if [ -n "$IPSET_BATCH" ]; then
+			"$IPSET_BIN" restore -exist <<< "$IPSET_BATCH"
 		fi
 
 	else
 		# use iptables for ranges and if ipset is not available
+
+		# Collect all deletions and insertions and apply them with a single
+		# iptables-restore call. Calling iptables once per entry is very slow for
+		# long lists, since every call reads and rewrites the complete ruleset.
+		IPTABLES_BATCH=""
 
 		### get old blocked entries
 		# export all rules with comment "BADIP" and replace -A (add) with -D (delete)
@@ -345,10 +359,11 @@ update () {
 			### delete old rules, that are not needed any more
 			if [ -n "$OUTDATED_ENTRIES" ]; then
 				"$LOGGER_BIN" $LOGGER_OPTS "Removing "$(echo "$OUTDATED_ENTRIES" | wc -l)" outdated entries from iptables for ${IPSET_FAMILY}"
+				# $FMT is a full iptables rule spec (e.g. "-D INPUT -s <ip> -j DROP ...").
+				# Replace its address by a placeholder once, then substitute each entry.
+				FMT=$(echo "$FMT" | sed -r "s!((([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}))(/[1-9][0-9]?)?!@IP@!")
 				while read -r IP; do
-					# $FMT is a full iptables rule spec (e.g. "-D INPUT -s <ip> -j DROP ...")
-					# and must be word-split into its individual arguments here.
-					"$IPTABLES_BIN" -w $(echo "$FMT" | sed -r "s!((([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}))(/[1-9][0-9]?)?!$IP!")
+					IPTABLES_BATCH+="${FMT/@IP@/$IP}"$'\n'
 				done <<< "$OUTDATED_ENTRIES"
 			fi
 		else
@@ -359,8 +374,20 @@ update () {
 		if [ -n "$NEW_ENTRIES" ]; then
 			"$LOGGER_BIN" $LOGGER_OPTS "Adding "$(echo "$NEW_ENTRIES" | wc -l)" new entries from iptables for ${IPSET_FAMILY}"
 			while read -r IP; do
-				"$IPTABLES_BIN" -w -I INPUT -s "$IP" -j DROP -m comment --comment "${IPSET_NAME}"
+				IPTABLES_BATCH+="-I INPUT -s $IP -j DROP -m comment --comment ${IPSET_NAME}"$'\n'
 			done <<< "$NEW_ENTRIES"
+		fi
+
+		# --noflush keeps all other rules. The batch is split into transactions of
+		# IPTABLES_RESTORE_CHUNK rules, since the nf_tables backend rejects too
+		# large transactions with "Message too long".
+		if [ -n "$IPTABLES_BATCH" ]; then
+			printf '%s' "$IPTABLES_BATCH" | awk -v n="${IPTABLES_RESTORE_CHUNK}" '
+				NR % n == 1 || n == 1 { print "*filter" }
+				{ print }
+				NR % n == 0 { print "COMMIT" }
+				END { if (NR % n) print "COMMIT" }' \
+			| "$IPTABLES_RESTORE_BIN" -w --noflush
 		fi
 	fi
 }
