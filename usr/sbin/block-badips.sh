@@ -48,6 +48,8 @@ LOCK_FILE="${RUNTIME_DIRECTORY:-/run}/block-badips.lock"
 BADIPS_NO_STDERR=${BADIPS_NO_STDERR:-""}
 N_DOWNLOAD_RETRY=5
 DOWNLOAD_RETRY_WAIT_S=30
+# maximum duration of a single download attempt
+DOWNLOAD_TIMEOUT_S=60
 IPTABLES_RESTORE_CHUNK=250
 
 type "$LOGGER_BIN"  >/dev/null 2>&1 || { echo >&2 "$LOGGER_BIN not found.  Aborting."; exit 1; }
@@ -157,6 +159,14 @@ else
 		printf 'machine %s\nlogin %s\npassword %s\n' "${URL_HOST}" "${BADIPS_USER}" "${BADIPS_PASSWORD}" > "${NETRC_FILE}"
 	fi
 
+	# count a failed download attempt and wait before the next one, if any
+	retry_later () {
+		N_DOWNLOAD_RETRY=$((N_DOWNLOAD_RETRY-1))
+		if [ ${N_DOWNLOAD_RETRY} -gt 0 ]; then
+			sleep ${DOWNLOAD_RETRY_WAIT_S}
+		fi
+	}
+
 	# download IP list
 	while [ ${N_DOWNLOAD_RETRY} -gt 0 ]; do
 		### download
@@ -166,24 +176,24 @@ else
 		# Try curl or wget to download.
 		set +e
 		if [ "${DOWNLOAD_PROGRAM}" = "curl" ]; then
+			# --fail turns HTTP errors into a non-zero exit code instead of saving the error page
 			if [ -n "${NETRC_FILE}" ]; then
-				r=$(curl -s --netrc-file "${NETRC_FILE}" "${URL}" -o "${FILE}" 2>&1)
+				r=$(curl -s -S --fail --max-time "${DOWNLOAD_TIMEOUT_S}" --netrc-file "${NETRC_FILE}" "${URL}" -o "${FILE}" 2>&1)
 			else
-				r=$(curl -s "${URL}" -o "${FILE}" 2>&1)
+				r=$(curl -s -S --fail --max-time "${DOWNLOAD_TIMEOUT_S}" "${URL}" -o "${FILE}" 2>&1)
 			fi
 		else
 			if [ -n "${NETRC_FILE}" ]; then
-				r=$(wget -q --netrc-file="${NETRC_FILE}" -O "${FILE}" "${URL}" 2>&1)
+				r=$(wget -q --timeout="${DOWNLOAD_TIMEOUT_S}" --tries=1 --netrc-file="${NETRC_FILE}" -O "${FILE}" "${URL}" 2>&1)
 			else
-				r=$(wget -q -O "${FILE}" "${URL}" 2>&1)
+				r=$(wget -q --timeout="${DOWNLOAD_TIMEOUT_S}" --tries=1 -O "${FILE}" "${URL}" 2>&1)
 			fi
 		fi
 		ret=$?
 		set -e
 		if [ ${ret} -ne 0 ]; then
 			"$LOGGER_BIN" $LOGGER_OPTS_WARN "Download of ${URL} using ${DOWNLOAD_PROGRAM} and username \"${BADIPS_USER}\" failed with exit code ${ret} and message \"${r}\""
-			N_DOWNLOAD_RETRY=$((N_DOWNLOAD_RETRY-1))
-			sleep ${DOWNLOAD_RETRY_WAIT_S}
+			retry_later
 			continue
 		else
 			"$LOGGER_BIN" $LOGGER_OPTS "Got "$(wc -l < "$FILE" ) " lines"
@@ -196,8 +206,7 @@ else
 		if [ ! -s "${FILE}" ]; then
 			# file does not exist or is empty
 			"$LOGGER_BIN" $LOGGER_OPTS_WARN "${URL} sent empty or no file"
-			N_DOWNLOAD_RETRY=$((N_DOWNLOAD_RETRY-1))
-			sleep ${DOWNLOAD_RETRY_WAIT_S}
+			retry_later
 			continue
 		elif grep -q -i HTML "${FILE}"; then
 			# file contains HTML code
@@ -215,8 +224,7 @@ else
 				date -Is >> "${STATUS_FILE}"
 				cat "${FILE}" >> "${STATUS_FILE}"
 			fi
-			N_DOWNLOAD_RETRY=$((N_DOWNLOAD_RETRY-1))
-			sleep ${DOWNLOAD_RETRY_WAIT_S}
+			retry_later
 			continue
 		elif grep -v -q -E "${LIST_ENTRY_REGEX}" "$FILE"; then
 			# something else than an IP or range is found
@@ -225,8 +233,7 @@ else
 			# mail -s "badip erronous file" root < "${FILE}"
 			date -Is >> "${STATUS_FILE}"
 			cat "${FILE}" >> "${STATUS_FILE}"
-			N_DOWNLOAD_RETRY=$((N_DOWNLOAD_RETRY-1))
-			sleep ${DOWNLOAD_RETRY_WAIT_S}
+			retry_later
 			continue
 		else
 			# everything fine, continue outside loop

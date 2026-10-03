@@ -13,6 +13,8 @@ EnvironmentFile=/etc/block-badips.conf
 StateDirectory=block-badips
 RuntimeDirectory=block-badips
 ExecStart=/usr/sbin/block-badips.sh
+# downloads are retried several times, each limited to 60 seconds; this is just a safety net
+TimeoutStartSec=15min
 Restart=on-failure
 RestartSec=60
 
