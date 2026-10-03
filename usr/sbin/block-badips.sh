@@ -106,6 +106,12 @@ trap cleanup INT TERM EXIT
 URL=${URL:-"https://lists.blocklist.de/lists/all.txt"}
 BADIPS_USER=${BADIPS_USER:-""}
 BADIPS_PASSWORD=${BADIPS_PASSWORD:-""}
+# maximum number of entries of an ipset; by default twice the number of entries, but at least 65536
+BADIPS_IPSET_MAXELEM=${BADIPS_IPSET_MAXELEM:-""}
+if [[ ! "${BADIPS_IPSET_MAXELEM}" =~ ^[0-9]*$ ]]; then
+	"$LOGGER_BIN" $LOGGER_OPTS_ERROR "BADIPS_IPSET_MAXELEM is \"${BADIPS_IPSET_MAXELEM}\", but must be a number."
+	exit 1
+fi
 
 # regular expressions for IP addresses and ranges, defined once to keep all checks consistent
 IPV4_REGEX='([0-9]{1,3}\.){3}[0-9]{1,3}'
@@ -308,7 +314,7 @@ remove_legacy_rules () {
 # is atomic and the set is never partially filled.
 load_set () {
 	local name="$1" family="$2" file="$3"
-	local new="${name}_NEW" old_count=0
+	local new="${name}_NEW" old_count=0 count maxelem
 
 	if "$IPSET_BIN" list -t "$name" >/dev/null 2>&1; then
 		if "$IPSET_BIN" list -t "$name" | grep -q "^Type: ${IPSET_TYPE}\$"; then
@@ -322,8 +328,15 @@ load_set () {
 	# a leftover from an aborted run
 	"$IPSET_BIN" destroy "$new" >/dev/null 2>&1 || true
 
+	count=$(wc -l < "$file")
+	if [ -n "${BADIPS_IPSET_MAXELEM}" ]; then
+		maxelem=${BADIPS_IPSET_MAXELEM}
+	else
+		maxelem=$((count * 2 > 65536 ? count * 2 : 65536))
+	fi
+
 	{
-		echo "create ${new} ${IPSET_TYPE} family ${family}"
+		echo "create ${new} ${IPSET_TYPE} family ${family} maxelem ${maxelem}"
 		sed "s|^|add ${new} |" "$file"
 	} | "$IPSET_BIN" restore -exist
 
@@ -333,7 +346,7 @@ load_set () {
 	else
 		"$IPSET_BIN" rename "$new" "$name"
 	fi
-	"$LOGGER_BIN" $LOGGER_OPTS "Loaded $(wc -l < "$file") entries into ipset ${name} (previously ${old_count})"
+	"$LOGGER_BIN" $LOGGER_OPTS "Loaded ${count} entries into ipset ${name} (previously ${old_count})"
 }
 
 # update the sets and the iptables rule of one address family (4 or 6)
