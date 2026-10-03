@@ -7,9 +7,9 @@
 # quiet on stdout, which makes it well suited for being executed as a cronjob.
 # This script uses ipset when available.
 # If /etc/block-badips.whitelist exists, IP adresses, standing in lines containing nothing else
-# than a single IPv4 address, are never blocked.
+# than a single IPv4 or IPv6 address, are never blocked, even if they are on the blacklist.
 # If /etc/block-badips.blacklist exists, IP adresses, standing in lines containing nothing else
-# than a single IPv4 address, are always blocked.
+# than a single IPv4 or IPv6 address, are always blocked unless they are on the whitelist.
 # HTTP 504 and HTTP 502 errors are ignored up to MAX_N_ERROR times.
 #
 # Please also use fail2ban with the badips modification and help to maintain the list of attackers.
@@ -242,13 +242,8 @@ sed -i -E -e 's/\/128//' "${FILE}"
 # remove the NULL IP since ipset will trigger errexit if 0.0.0.0 appears
 sed -i -E -e '/^0\.0\.0\.0(\/[0-9]{1,2})?$/d' "${FILE}"
 
-# remove IPs from whitelist file
-if [ -s "${WHITELIST_FILE}" ]; then
-	FILE_TMP=$(mktemp -t block_badips.prefilter.XXXXXX)
-	TMP_FILES+=("$FILE_TMP")
-	mv "${FILE}" "${FILE_TMP}"
-	comm -23 <(sort "${FILE_TMP}") <(grep -oE '^(([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4})$' "${WHITELIST_FILE}" | sort) > "${FILE}"
-fi
+# lines of the whitelist and blacklist file that contain a single IPv4 or IPv6 address
+LIST_IP_REGEX='^((([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}))$'
 
 # add IPs from blacklist file
 if [ -s "${BLACKLIST_FILE}" ]; then
@@ -257,11 +252,19 @@ if [ -s "${BLACKLIST_FILE}" ]; then
 	mv "${FILE}" "${FILE_TMP}"
 	# Hint: grep will exit with error if no IP was in BLACKLIST_FILE. Thus disable 'errexit' briefley
 	set +e
-	grep -oE '^(([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4})$' "${BLACKLIST_FILE}" >> "${FILE_TMP}"
+	grep -oE "${LIST_IP_REGEX}" "${BLACKLIST_FILE}" >> "${FILE_TMP}"
 	set -e
 	# Remove duplicates (same IP could have been in downloaded file and local blacklist file) to avoid warnings
 	# from ipset.
 	sort --unique "${FILE_TMP}" > "${FILE}"
+fi
+
+# remove IPs from whitelist file; done after adding the blacklist, so whitelisted IPs are never blocked
+if [ -s "${WHITELIST_FILE}" ]; then
+	FILE_TMP=$(mktemp -t block_badips.prefilter.XXXXXX)
+	TMP_FILES+=("$FILE_TMP")
+	mv "${FILE}" "${FILE_TMP}"
+	comm -23 <(sort "${FILE_TMP}") <(grep -oE "${LIST_IP_REGEX}" "${WHITELIST_FILE}" | sort) > "${FILE}"
 fi
 
 # whitelist unroutable (local) addresses
