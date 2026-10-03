@@ -71,9 +71,9 @@ for NUM in "$WARN_ENTRIES" "$CRIT_ENTRIES" "$WARN_AGE_S" "$CRIT_AGE_S" "$WARN_FI
 	[[ "$NUM" =~ ^[0-9]+$ ]] || usage
 done
 
-# iptables-save/ip6tables-save are required; without them we cannot count
-# anything meaningful, so report UNKNOWN rather than silently counting 0.
-for BIN in "$IP4TABLES_SAVE_BIN" "$IP6TABLES_SAVE_BIN"; do
+# ipset and iptables-save/ip6tables-save are required; without them we cannot
+# count anything meaningful, so report UNKNOWN rather than silently counting 0.
+for BIN in "$IPSET_BIN" "$IP4TABLES_SAVE_BIN" "$IP6TABLES_SAVE_BIN"; do
 	if [ ! -x "$BIN" ]; then
 		echo "UNKNOWN - required binary $BIN not found or not executable"
 		exit $NAG_UNKNOWN
@@ -83,45 +83,34 @@ done
 CRIT_MSGS=()
 WARN_MSGS=()
 
-# Print "<entries> <maxelem>" of the given ipset. Only the header is listed
-# (-t), so this is cheap even for huge sets. A missing ipset binary or a
-# not-yet-created set (e.g. block-badips.sh never ran yet) is a legitimate
-# "0 entries" case, not an error.
+# Print "<hosts> <ranges> <maxelem>" of the given ipset. A not-yet-created set
+# (e.g. block-badips.sh never ran yet) is a legitimate "0 entries" case, not an
+# error.
 ipset_count () {
 	local name="$1"
-	local header
-	if [ -x "$IPSET_BIN" ] && header=$("$IPSET_BIN" list -t "$name" 2>/dev/null); then
-		awk '/^Number of entries:/ { n = $4 }
-			/^Header:/ { for (i = 1; i < NF; i++) if ($i == "maxelem") m = $(i + 1) }
-			END { print n + 0, m + 0 }' <<< "$header"
-	else
-		echo 0 0
-	fi
+	"$IPSET_BIN" list "$name" -o save 2>/dev/null | awk '
+		/^create / { for (i = 1; i < NF; i++) if ($i == "maxelem") m = $(i + 1) }
+		/^add / { if (index($3, "/")) r++; else h++ }
+		END { print h + 0, r + 0, m + 0 }'
 }
 
-# Print "<hosts> <ranges> <set_rule>" for the BADIP rules in one iptables-save
-# dump: hosts and ranges blocked directly by iptables, and whether the rule
-# matching the ipset is present (1) or not (0).
-iptables_count () {
-	local save_bin="$1" name="$2" host_prefix="$3"
-	"$save_bin" | awk -v name="$name" -v host="/${host_prefix} " '
-		$0 !~ "--comment \"?" name "\"?( |$)" { next }
-		/--match-set/ { s = 1; next }
-		index($0, host) { h++; next }
-		{ r++ }
-		END { print h + 0, r + 0, s + 0 }'
+# Print 1 if an iptables rule matching the given ipset exists, 0 otherwise.
+set_rule_present () {
+	local save_bin="$1" name="$2"
+	"$save_bin" | awk -v set="--match-set ${name} src" 'index($0, set) { s = 1 } END { print s + 0 }'
 }
 
 # check one address family; sets NUM_IP<family> and NUM_RANGES<family>
 check_family () {
-	local family="$1" save_bin="$2" host_prefix="$3"
+	local family="$1" save_bin="$2"
 	local name="BADIP${family}"
-	local set_entries set_max hosts ranges set_rule
+	local hosts ranges set_max set_entries set_rule
 
-	read -r set_entries set_max < <(ipset_count "$name")
-	read -r hosts ranges set_rule < <(iptables_count "$save_bin" "$name" "$host_prefix")
+	read -r hosts ranges set_max < <(ipset_count "$name")
+	set_rule=$(set_rule_present "$save_bin" "$name")
+	set_entries=$((hosts + ranges))
 
-	printf -v "NUM_IP${family}" '%d' $((set_entries + hosts))
+	printf -v "NUM_IP${family}" '%d' "$hosts"
 	printf -v "NUM_RANGES${family}" '%d' "$ranges"
 
 	# a filled ipset blocks nothing if the iptables rule referencing it is missing
@@ -135,8 +124,8 @@ check_family () {
 	fi
 }
 
-check_family 4 "$IP4TABLES_SAVE_BIN" 32
-check_family 6 "$IP6TABLES_SAVE_BIN" 128
+check_family 4 "$IP4TABLES_SAVE_BIN"
+check_family 6 "$IP6TABLES_SAVE_BIN"
 
 NUM_ENTRIES=$((NUM_IP4 + NUM_IP6 + NUM_RANGES4 + NUM_RANGES6))
 

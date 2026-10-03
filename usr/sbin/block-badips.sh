@@ -51,6 +51,8 @@ DOWNLOAD_RETRY_WAIT_S=30
 # maximum duration of a single download attempt
 DOWNLOAD_TIMEOUT_S=60
 IPTABLES_RESTORE_CHUNK=250
+# hash:net holds single addresses as well as ranges
+IPSET_TYPE=hash:net
 
 type "$LOGGER_BIN"  >/dev/null 2>&1 || { echo >&2 "$LOGGER_BIN not found.  Aborting."; exit 1; }
 
@@ -67,7 +69,7 @@ fi
 # Fail fast with a clear log message instead of running into an obscure
 # error (or, with `set -o nounset`, an unbound-variable crash) deep inside
 # the script once a required binary turns out to be missing.
-for BIN in "$IP4TABLES_BIN" "$IP4TABLES_SAVE_BIN" "$IP4TABLES_RESTORE_BIN" "$IP6TABLES_BIN" "$IP6TABLES_SAVE_BIN" "$IP6TABLES_RESTORE_BIN"; do
+for BIN in "$IPSET_BIN" "$IP4TABLES_BIN" "$IP4TABLES_SAVE_BIN" "$IP4TABLES_RESTORE_BIN" "$IP6TABLES_BIN" "$IP6TABLES_SAVE_BIN" "$IP6TABLES_RESTORE_BIN"; do
 	type "$BIN" >/dev/null 2>&1 || { "$LOGGER_BIN" $LOGGER_OPTS_ERROR "$BIN not found. Aborting."; exit 1; }
 done
 
@@ -250,195 +252,128 @@ fi
 
 # assert: $FILE contains a single IPv4 or IPv6 adresses or range in each line
 
-# remove /32 and /128 prefix for IPv4 Hosts (will bog split in ranges and hosts later)
-sed -i -E -e "s/^(${IPV4_REGEX})\/32\$/\1/" "${FILE}"
-sed -i -E -e 's/\/128//' "${FILE}"
-
-# remove the NULL IP since ipset will trigger errexit if 0.0.0.0 appears
+# remove the NULL IP
 sed -i -E -e '/^0\.0\.0\.0(\/[0-9]{1,2})?$/d' "${FILE}"
 
-# lines of the whitelist and blacklist file that contain a single IPv4 or IPv6 address
-LIST_IP_REGEX="^${IP_REGEX}\$"
-
-# add IPs from blacklist file
+# add IPs and ranges from blacklist file
 if [ -s "${BLACKLIST_FILE}" ]; then
-	FILE_TMP=$(mktemp -t block_badips.prefilter.XXXXXX)
-	TMP_FILES+=("$FILE_TMP")
-	mv "${FILE}" "${FILE_TMP}"
-	# Hint: grep will exit with error if no IP was in BLACKLIST_FILE. Thus disable 'errexit' briefley
-	set +e
-	grep -oE "${LIST_IP_REGEX}" "${BLACKLIST_FILE}" >> "${FILE_TMP}"
-	set -e
-	# Remove duplicates (same IP could have been in downloaded file and local blacklist file) to avoid warnings
-	# from ipset.
-	sort --unique "${FILE_TMP}" > "${FILE}"
+	# Hint: grep exits with 1 if there is no IP in BLACKLIST_FILE, hence || true
+	grep -E "${LIST_ENTRY_REGEX}" "${BLACKLIST_FILE}" >> "${FILE}" || true
 fi
 
-# remove IPs from whitelist file; done after adding the blacklist, so whitelisted IPs are never blocked
+# Addresses and ranges that are never blocked go into an allow set, which the
+# blocking rule excludes. In contrast to removing entries from the list, this
+# also exempts them if they are part of a larger blocked range.
+ALLOW_FILE=$(mktemp -t block_badips.allow.XXXXXX)
+TMP_FILES+=("$ALLOW_FILE")
+# unroutable (local) addresses
+printf '%s\n' 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 127.0.0.0/8 \
+	fe80::/10 fec0::/10 fc00::/7 > "${ALLOW_FILE}"
 if [ -s "${WHITELIST_FILE}" ]; then
-	FILE_TMP=$(mktemp -t block_badips.prefilter.XXXXXX)
-	TMP_FILES+=("$FILE_TMP")
-	mv "${FILE}" "${FILE_TMP}"
-	comm -23 <(sort "${FILE_TMP}") <(grep -oE "${LIST_IP_REGEX}" "${WHITELIST_FILE}" | sort) > "${FILE}"
+	grep -E "${LIST_ENTRY_REGEX}" "${WHITELIST_FILE}" >> "${ALLOW_FILE}" || true
 fi
 
-# whitelist unroutable (local) addresses
-sed -i -E -e '/^(192\.168|10\.|172\.1[6789]\.|172\.2[0-9]\.|172\.3[01]\.|169\.254|127\.)/d' "${FILE}"
-sed -i -E -e '/^((fe80)|(fec0)|(f[cd][0-9a-f]{2})):.*$/d' "${FILE}"
-
-
-update () {
-
-	if [ "$IPTABLES_BIN" = "$IP4TABLES_BIN" ]; then
-		IPSET_NAME=BADIP4
-		IPSET_FAMILY=inet
-		IPTABLES_SAVE_BIN=$IP4TABLES_SAVE_BIN
-		IPTABLES_RESTORE_BIN=$IP4TABLES_RESTORE_BIN
+# print the lines of stdin that belong to the given address family (4 or 6)
+# Hint: || true is necessary for grep to not trigger errexit when there is no match
+filter_family () {
+	if [ "$1" = 4 ]; then
+		grep -v ":" || true
 	else
-		IPSET_NAME=BADIP6
-		IPSET_FAMILY=inet6
-		IPTABLES_SAVE_BIN=$IP6TABLES_SAVE_BIN
-		IPTABLES_RESTORE_BIN=$IP6TABLES_RESTORE_BIN
-	fi
-
-	### main part
-	if [ -x "$IPSET_BIN" ] && [ -z "${FORCE_IPTABLES}" ] ; then
-		# use ipset if available since it's faster than plain iptables
-		# http://daemonkeeper.net/781/mass-blocking-ip-addresses-with-ipset/
-
-		# create new ipset if not already there
-		if ! "$IPSET_BIN" list "${IPSET_NAME}" >/dev/null 2>&1; then
-			"$IPSET_BIN" create "${IPSET_NAME}" hash:ip hashsize 4096 family "${IPSET_FAMILY}"
-		fi
-
-		# iptables should be added only once. So check if it already there.
-		if ! "$IPTABLES_BIN" -w -C INPUT  -m set --match-set "${IPSET_NAME}" src -m comment --comment "${IPSET_NAME}" -j REJECT > /dev/null 2>&1; then
-			"$IPTABLES_BIN" -w -I INPUT  -m set --match-set "${IPSET_NAME}"  src -m comment --comment "${IPSET_NAME}" -j REJECT
-		fi
-
-		### get currently blocked entries
-		CURRENT_ENTRIES=$("$IPSET_BIN" list "${IPSET_NAME}" -o save | grep add | awk '{ print $3 }' | sort)
-		"$LOGGER_BIN" $LOGGER_OPTS "Found "$(echo "$CURRENT_ENTRIES" | wc -l)" entries in ipset ${IPSET_NAME}"
-
-		### list of ips that are not considered bad any more
-		OUTDATED_ENTRIES=$(comm -13 <(echo "$FETCHED_ENTRIES") <(echo "$CURRENT_ENTRIES"))
-
-		### list of ips that are new and should be blocked
-		NEW_ENTRIES=$(comm -23 <(echo "$FETCHED_ENTRIES") <(echo "$CURRENT_ENTRIES"))
-
-		# Feed all deletions and additions to a single "ipset restore" instead of
-		# spawning one ipset process per entry, which is very slow for long lists.
-		# -exist ignores deleting a missing / adding an already present entry.
-		IPSET_BATCH=""
-
-		### delete old rules, that are not needed any more
-		if [ -n "$OUTDATED_ENTRIES" ]; then
-			"$LOGGER_BIN" $LOGGER_OPTS "Removing "$(echo "$OUTDATED_ENTRIES" | wc -l )" outdated entries from ipset ${IPSET_NAME}"
-			IPSET_BATCH+=$(sed "s/^/del ${IPSET_NAME} /" <<< "$OUTDATED_ENTRIES")$'\n'
-		fi
-
-		### add new IPs that should be blocked
-		if [ -n "$NEW_ENTRIES" ]; then
-			"$LOGGER_BIN" $LOGGER_OPTS "Adding "$(echo "$NEW_ENTRIES" | wc -l)" new entries to ipset ${IPSET_NAME}"
-			IPSET_BATCH+=$(sed "s/^/add ${IPSET_NAME} /" <<< "$NEW_ENTRIES")$'\n'
-		fi
-
-		if [ -n "$IPSET_BATCH" ]; then
-			"$IPSET_BIN" restore -exist <<< "$IPSET_BATCH"
-		fi
-
-	else
-		# use iptables for ranges and if ipset is not available
-
-		# Collect all deletions and insertions and apply them with a single
-		# iptables-restore call. Calling iptables once per entry is very slow for
-		# long lists, since every call reads and rewrites the complete ruleset.
-		IPTABLES_BATCH=""
-
-		### get old blocked entries
-		# export all rules with comment "BADIP" and replace -A (add) with -D (delete)
-		CURRENT_RULES=$("$IPTABLES_SAVE_BIN"  | { grep -e "--comment ${IPSET_NAME}" || true ; } |  grep -v -e '--match-set' || true )
-		if [ -n "$CURRENT_RULES" ]; then
-			"$LOGGER_BIN" $LOGGER_OPTS "Found "$(echo "$CURRENT_RULES" | wc -l )" entries in iptables for ${IPSET_FAMILY}"
-
-			# get format of old rule (exact rule must be given to iptables as argument)
-			FMT=$(echo "$CURRENT_RULES" | tail -n 1 | sed 's/-A /-D /')
-			# Hint: don't pipe to 'head' but use 'tail' to avoid 'echo' being closed when something is still to write resulting in broken pipes
-
-			# get currently blocked IPs/ranges
-			CURRENT_ENTRIES=$(echo "$CURRENT_RULES" | grep -oE "${IP_REGEX}${PREFIX_REGEX}" | sort)
-
-			### list of ips that are not considered bad any more
-			OUTDATED_ENTRIES=$(comm -13 <(echo "$FETCHED_ENTRIES") <(echo "$CURRENT_ENTRIES"))
-
-			### list of ips that are new and should be blocked
-			NEW_ENTRIES=$(comm -23 <(echo "$FETCHED_ENTRIES") <(echo "$CURRENT_ENTRIES"))
-
-			### delete old rules, that are not needed any more
-			if [ -n "$OUTDATED_ENTRIES" ]; then
-				"$LOGGER_BIN" $LOGGER_OPTS "Removing "$(echo "$OUTDATED_ENTRIES" | wc -l)" outdated entries from iptables for ${IPSET_FAMILY}"
-				# $FMT is a full iptables rule spec (e.g. "-D INPUT -s <ip> -j DROP ...").
-				# Replace its address by a placeholder once, then substitute each entry.
-				FMT=$(echo "$FMT" | sed -r "s!${IP_REGEX}${PREFIX_REGEX}!@IP@!")
-				while read -r IP; do
-					IPTABLES_BATCH+="${FMT/@IP@/$IP}"$'\n'
-				done <<< "$OUTDATED_ENTRIES"
-			fi
-		else
-			NEW_ENTRIES="$FETCHED_ENTRIES"
-		fi
-
-		### add new IPs that should be blocked
-		if [ -n "$NEW_ENTRIES" ]; then
-			"$LOGGER_BIN" $LOGGER_OPTS "Adding "$(echo "$NEW_ENTRIES" | wc -l)" new entries from iptables for ${IPSET_FAMILY}"
-			while read -r IP; do
-				IPTABLES_BATCH+="-I INPUT -s $IP -j DROP -m comment --comment ${IPSET_NAME}"$'\n'
-			done <<< "$NEW_ENTRIES"
-		fi
-
-		# --noflush keeps all other rules. The batch is split into transactions of
-		# IPTABLES_RESTORE_CHUNK rules, since the nf_tables backend rejects too
-		# large transactions with "Message too long".
-		if [ -n "$IPTABLES_BATCH" ]; then
-			printf '%s' "$IPTABLES_BATCH" | awk -v n="${IPTABLES_RESTORE_CHUNK}" '
-				NR % n == 1 || n == 1 { print "*filter" }
-				{ print }
-				NR % n == 0 { print "COMMIT" }
-				END { if (NR % n) print "COMMIT" }' \
-			| "$IPTABLES_RESTORE_BIN" -w --noflush
-		fi
+		grep ":" || true
 	fi
 }
 
+# Remove rules created by older versions of this script: one iptables rule per
+# range and a rule matching the set without excluding the allow set. Rules are
+# identified by their comment, all other rules are left alone.
+remove_legacy_rules () {
+	local name="$1" save_bin="$2" restore_bin="$3"
+	local rules
+	rules=$("$save_bin" | awk -v name="$name" -v keep="! --match-set ${name}_ALLOW src" -v n="${IPTABLES_RESTORE_CHUNK}" '
+		/^\*/ { table = $0; next }
+		/^-A / && $0 ~ ("--comment \"?" name "\"?( |$)") && !(table == "*filter" && index($0, keep)) {
+			if (open && (cur != table || c >= n)) { print "COMMIT"; open = 0 }
+			if (!open) { print table; open = 1; cur = table; c = 0 }
+			sub(/^-A /, "-D "); print; c++
+		}
+		END { if (open) print "COMMIT" }')
+	if [ -n "$rules" ]; then
+		"$LOGGER_BIN" $LOGGER_OPTS "Removing $(grep -c '^-D ' <<< "$rules") rules of older versions for ${name}"
+		"$restore_bin" -w --noflush <<< "$rules"
+	fi
+}
 
-# split into IPv4 and IPv6 addresses and ranges (IPs are faster with ipset and ranges are easier to handle with iptables)
-# Hint 1: || true is necessary for grep  to not trigger errexit when grep operates on empty data
-# Hint 2: Curly brackets are required since | binds tighter than ||
+# Replace the content of an ipset with the entries of a file. The entries are
+# loaded into a new set, which is then swapped with the old one, so the update
+# is atomic and the set is never partially filled.
+load_set () {
+	local name="$1" family="$2" file="$3"
+	local new="${name}_NEW" old_count=0
 
-# add IPv4 addresses
-FETCHED_ENTRIES=$({ grep -v ":" "${FILE}" || true ; } | grep -v "/" || true)
-IPTABLES_BIN=$IP4TABLES_BIN
-FORCE_IPTABLES=""
-update
+	if "$IPSET_BIN" list -t "$name" >/dev/null 2>&1; then
+		if "$IPSET_BIN" list -t "$name" | grep -q "^Type: ${IPSET_TYPE}\$"; then
+			old_count=$("$IPSET_BIN" list -t "$name" | awk '/^Number of entries:/ { print $4 }')
+		else
+			# sets of another type, e.g. hash:ip of older versions, cannot be swapped
+			"$IPSET_BIN" destroy "$name"
+		fi
+	fi
 
-# add IPv4 ranges
-FETCHED_ENTRIES=$({ grep -v ":" "${FILE}" || true ; } | grep "/" || true)
-# add IPv4 ranges
-IPTABLES_BIN=$IP4TABLES_BIN
-FORCE_IPTABLES="y"
-update
+	# a leftover from an aborted run
+	"$IPSET_BIN" destroy "$new" >/dev/null 2>&1 || true
 
-# add IPv6 addresses
-FETCHED_ENTRIES=$({ grep ":" "${FILE}" || true ; } | grep -v "/" || true)
-IPTABLES_BIN=$IP6TABLES_BIN
-FORCE_IPTABLES=""
-update
+	{
+		echo "create ${new} ${IPSET_TYPE} family ${family}"
+		sed "s|^|add ${new} |" "$file"
+	} | "$IPSET_BIN" restore -exist
 
-# add IPv6 ranges
-FETCHED_ENTRIES=$({ grep ":" "${FILE}" || true ; } | grep "/" || true)
-IPTABLES_BIN=$IP6TABLES_BIN
-FORCE_IPTABLES="y"
-update
+	if "$IPSET_BIN" list -t "$name" >/dev/null 2>&1; then
+		"$IPSET_BIN" swap "$new" "$name"
+		"$IPSET_BIN" destroy "$new"
+	else
+		"$IPSET_BIN" rename "$new" "$name"
+	fi
+	"$LOGGER_BIN" $LOGGER_OPTS "Loaded $(wc -l < "$file") entries into ipset ${name} (previously ${old_count})"
+}
+
+# update the sets and the iptables rule of one address family (4 or 6)
+apply_family () {
+	local v="$1"
+	local name="BADIP${v}" family iptables_bin save_bin restore_bin block_file allow_file
+
+	if [ "$v" = 4 ]; then
+		family=inet
+		iptables_bin=$IP4TABLES_BIN
+		save_bin=$IP4TABLES_SAVE_BIN
+		restore_bin=$IP4TABLES_RESTORE_BIN
+	else
+		family=inet6
+		iptables_bin=$IP6TABLES_BIN
+		save_bin=$IP6TABLES_SAVE_BIN
+		restore_bin=$IP6TABLES_RESTORE_BIN
+	fi
+
+	block_file=$(mktemp -t block_badips.block.XXXXXX)
+	allow_file=$(mktemp -t block_badips.allow.XXXXXX)
+	TMP_FILES+=("$block_file" "$allow_file")
+	filter_family "$v" < "${FILE}" > "$block_file"
+	filter_family "$v" < "${ALLOW_FILE}" > "$allow_file"
+
+	# must come first, since rules of older versions may reference a set of the old type
+	remove_legacy_rules "$name" "$save_bin" "$restore_bin"
+
+	load_set "$name" "$family" "$block_file"
+	load_set "${name}_ALLOW" "$family" "$allow_file"
+
+	# block everything in the set except for the allowed addresses; the rule is added only once
+	local rule=(INPUT -m set --match-set "$name" src -m set ! --match-set "${name}_ALLOW" src -m comment --comment "$name" -j REJECT)
+	if ! "$iptables_bin" -w -C "${rule[@]}" >/dev/null 2>&1; then
+		"$iptables_bin" -w -I "${rule[@]}"
+	fi
+}
+
+apply_family 4
+apply_family 6
 
 ### end of script
 "$LOGGER_BIN" $LOGGER_OPTS "Finished applying block rules"
