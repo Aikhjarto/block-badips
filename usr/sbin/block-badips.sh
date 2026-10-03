@@ -1,5 +1,5 @@
 #!/bin/bash
-# This script downloads a list of IPs known for brute force attacking within the last two weeks.
+# This script downloads a list of IPs known for recent attacks, by default the list of blocklist.de.
 # The fetched IPs get blocked with iptables with the special comment "BADIP". This script only
 # modifies iptables rules with that comment. This measure makes it well compatible with other firewall
 # scripts like the SUSEFirewall.
@@ -12,8 +12,8 @@
 # than a single IPv4 or IPv6 address, are always blocked unless they are on the whitelist.
 # HTTP 504 and HTTP 502 errors are ignored up to MAX_N_ERROR times.
 #
-# Please also use fail2ban with the badips modification and help to maintain the list of attackers.
-# See also: fail2ban and http:///www.badips.com
+# Please also use fail2ban with its blocklist_de action and help to maintain the list of attackers.
+# See also: fail2ban and https://www.blocklist.de
 #
 # Requirements
 #	* iptables
@@ -99,7 +99,7 @@ cleanup () {
 trap cleanup INT TERM EXIT
 
 # set a default URL where to fetch IP list
-URL=${URL:-"https://www.badips.com/get/list/ssh/2?age=2w"}
+URL=${URL:-"https://lists.blocklist.de/lists/all.txt"}
 BADIPS_USER=${BADIPS_USER:-""}
 BADIPS_PASSWORD=${BADIPS_PASSWORD:-""}
 
