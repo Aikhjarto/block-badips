@@ -1,27 +1,35 @@
 #!/bin/bash
-# This script downloads a list of IPs known for recent attacks, by default the list of blocklist.de.
-# The fetched IPs get blocked with iptables with the special comment "BADIP". This script only
-# modifies iptables rules with that comment. This measure makes it well compatible with other firewall
-# scripts like the SUSEFirewall.
-# The iptables rules are updated every time this script is executed. Additionally this script is
-# quiet on stdout, which makes it well suited for being executed as a cronjob.
-# This script uses ipset when available.
-# If /etc/block-badips.whitelist exists, IP adresses, standing in lines containing nothing else
-# than a single IPv4 or IPv6 address, are never blocked, even if they are on the blacklist.
-# If /etc/block-badips.blacklist exists, IP adresses, standing in lines containing nothing else
-# than a single IPv4 or IPv6 address, are always blocked unless they are on the whitelist.
-# HTTP 504 and HTTP 502 errors are ignored up to MAX_N_ERROR times.
+# This script downloads a list of IPs known for recent attacks, by default the list of blocklist.de,
+# and blocks them.
+#
+# The addresses and ranges are put into the hash:net ipsets BADIP4 and BADIP6, which are replaced
+# atomically on each run. A single iptables rule per address family in the PREROUTING chain of the
+# raw table drops traffic from these sets. This script only modifies iptables rules with the
+# comment "BADIP4" or "BADIP6", which makes it compatible with other firewall tools like
+# firewalld or fail2ban.
+# This script is quiet on stdout and logs to syslog, which makes it well suited for being executed
+# by a systemd timer or a cronjob.
+#
+# If /etc/block-badips.blacklist exists, IP addresses and ranges, standing in lines containing
+# nothing else, are always blocked unless they are on the whitelist.
+# If /etc/block-badips.whitelist exists, IP addresses and ranges, standing in lines containing
+# nothing else, are never blocked, even if they are on the blacklist. Neither are private and
+# other special-purpose addresses. These go into the ipsets BADIP4_ALLOW and BADIP6_ALLOW.
+#
+# The last valid list is stored and applied right away if the blocking rules are missing, e.g.
+# after a reboot. Lists that are invalid, shrank a lot, or contain too broad ranges are refused
+# or filtered, see the BADIPS_* variables below. Failed downloads are retried N_DOWNLOAD_RETRY
+# times.
 #
 # Please also use fail2ban with its blocklist_de action and help to maintain the list of attackers.
 # See also: fail2ban and https://www.blocklist.de
 #
 # Requirements
-#	* iptables
-#	* ipset or iptables-save
-#	* iptables-restore, ip6tables-restore
+#	* iptables, ip6tables, iptables-save, ip6tables-save, iptables-restore, ip6tables-restore
+#	* ipset
 #	* curl or wget
 #	* logger
-#	* mktemp, wc, sed, grep, sort, comm, flock
+#	* mktemp, wc, sed, grep, awk, head, tail, tr, flock
 #
 
 set -o nounset
@@ -398,7 +406,7 @@ apply_list () {
 	TMP_FILES+=("$FILE")
 	cp "$1" "$FILE"
 
-	# assert: $FILE contains a single IPv4 or IPv6 adresses or range in each line
+	# assert: $FILE contains a single IPv4 or IPv6 address or range in each line
 
 	# Ignore ranges that are too broad. A faulty list containing e.g. 0.0.0.0/1 would
 	# otherwise block half of the internet, likely including the admin.

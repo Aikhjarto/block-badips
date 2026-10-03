@@ -1,10 +1,12 @@
 # blacklist file for block-badips
 #
-# Each IPv4 or IPv6 address which is in a separate line will always be blocked
-# by block-badips.sh, even if it is not on the downloaded list, unless it is in
-# /etc/block-badips.whitelist. Ranges are not supported.
+# Each IPv4 or IPv6 address or range which is in a separate line will always be
+# blocked by block-badips.sh, even if it is not on the downloaded list, unless
+# it is in /etc/block-badips.whitelist.
 # Lines containing anything else, like these comments, are ignored.
 #
 # Examples:
 #198.51.100.23
+#203.0.113.0/24
 #2001:db8::23
+#2001:db8:2::/48
