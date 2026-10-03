@@ -240,7 +240,7 @@ sed -i -E -e 's/^(([0-9]{1,3}[\.]){3}[0-9]{1,3})\/32$/\1/' "${FILE}"
 sed -i -E -e 's/\/128//' "${FILE}"
 
 # remove the NULL IP since ipset will trigger errexit if 0.0.0.0 appears
-sed -i -e '/0.0.0.0/d' "${FILE}"
+sed -i -E -e '/^0\.0\.0\.0(\/[0-9]{1,2})?$/d' "${FILE}"
 
 # remove IPs from whitelist file
 if [ -s "${WHITELIST_FILE}" ]; then
