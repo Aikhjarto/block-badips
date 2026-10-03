@@ -290,14 +290,14 @@ filter_family () {
 }
 
 # Remove rules created by older versions of this script: one iptables rule per
-# range and a rule matching the set without excluding the allow set. Rules are
-# identified by their comment, all other rules are left alone.
+# range and rules matching the set in the INPUT chain. Rules are identified by
+# their comment, all other rules are left alone.
 remove_legacy_rules () {
 	local name="$1" save_bin="$2" restore_bin="$3"
 	local rules
 	rules=$("$save_bin" | awk -v name="$name" -v keep="! --match-set ${name}_ALLOW src" -v n="${IPTABLES_RESTORE_CHUNK}" '
 		/^\*/ { table = $0; next }
-		/^-A / && $0 ~ ("--comment \"?" name "\"?( |$)") && !(table == "*filter" && index($0, keep)) {
+		/^-A / && $0 ~ ("--comment \"?" name "\"?( |$)") && !(table == "*raw" && index($0, keep)) {
 			if (open && (cur != table || c >= n)) { print "COMMIT"; open = 0 }
 			if (!open) { print table; open = 1; cur = table; c = 0 }
 			sub(/^-A /, "-D "); print; c++
@@ -378,10 +378,13 @@ apply_family () {
 	load_set "$name" "$family" "$block_file"
 	load_set "${name}_ALLOW" "$family" "$allow_file"
 
-	# block everything in the set except for the allowed addresses; the rule is added only once
-	local rule=(INPUT -m set --match-set "$name" src -m set ! --match-set "${name}_ALLOW" src -m comment --comment "$name" -j REJECT)
-	if ! "$iptables_bin" -w -C "${rule[@]}" >/dev/null 2>&1; then
-		"$iptables_bin" -w -I "${rule[@]}"
+	# Drop everything in the set except for the allowed addresses; the rule is
+	# added only once. The raw table is processed before connection tracking and
+	# routing, so this is cheap and also covers traffic forwarded to VMs or
+	# containers.
+	local rule=(PREROUTING -m set --match-set "$name" src -m set ! --match-set "${name}_ALLOW" src -m comment --comment "$name" -j DROP)
+	if ! "$iptables_bin" -w -t raw -C "${rule[@]}" >/dev/null 2>&1; then
+		"$iptables_bin" -w -t raw -I "${rule[@]}"
 	fi
 }
 
