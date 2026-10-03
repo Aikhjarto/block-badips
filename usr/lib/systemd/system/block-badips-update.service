@@ -18,6 +18,26 @@ ExecStart=/usr/sbin/block-badips.sh
 # downloads are retried several times, each limited to 60 seconds; this is just a safety net
 TimeoutStartSec=15min
 
+# hardening: iptables and ipset need CAP_NET_ADMIN and CAP_NET_RAW, the legacy
+# iptables backend may need to load kernel modules
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_MODULE
+NoNewPrivileges=yes
+ProtectSystem=strict
+# the legacy iptables backend uses the lock file /run/xtables.lock
+ReadWritePaths=/run
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
+
 Restart=on-failure
 RestartSec=120s
 
