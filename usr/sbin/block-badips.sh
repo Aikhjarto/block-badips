@@ -103,13 +103,21 @@ URL=${URL:-"https://lists.blocklist.de/lists/all.txt"}
 BADIPS_USER=${BADIPS_USER:-""}
 BADIPS_PASSWORD=${BADIPS_PASSWORD:-""}
 
+# regular expressions for IP addresses and ranges, defined once to keep all checks consistent
+IPV4_REGEX='([0-9]{1,3}\.){3}[0-9]{1,3}'
+IPV6_REGEX='([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}'
+IP_REGEX="((${IPV4_REGEX})|(${IPV6_REGEX}))"
+PREFIX_REGEX='(/[1-9][0-9]?)?'
+# a line of the downloaded list: a single address or range
+LIST_ENTRY_REGEX="^${IP_REGEX}${PREFIX_REGEX}\$"
+
 if [[ -r "${URL}" ]]; then
 	"$LOGGER_BIN" $LOGGER_OPTS "Fetching list of bad IPs from file ${URL}"
 	FILE=$(mktemp -t block_badips.new.XXXXXX)
 	TMP_FILES+=("$FILE")
 	cat "${URL}" > "${FILE}"
 
-	if grep -v -q -oE '^(([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4})(/[1-9][0-9]?)?$' "${FILE}"; then
+	if grep -v -q -E "${LIST_ENTRY_REGEX}" "${FILE}"; then
 		# something else than an IP or range is found
 		"$LOGGER_BIN" $LOGGER_OPTS_WARN "${URL} contained something else than a list of IP addresses and ranges"
 		# uncomment mail for debugging, productive script shouldn't depend on mail
@@ -210,7 +218,7 @@ else
 			N_DOWNLOAD_RETRY=$((N_DOWNLOAD_RETRY-1))
 			sleep ${DOWNLOAD_RETRY_WAIT_S}
 			continue
-		elif grep -v -q -oE '^((([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}))(/[1-9][0-9]?)?$' "$FILE"; then
+		elif grep -v -q -E "${LIST_ENTRY_REGEX}" "$FILE"; then
 			# something else than an IP or range is found
 			"$LOGGER_BIN" $LOGGER_OPTS_WARN "${URL} contained something else than a list of IP addresses and ranges"
 			# uncomment mail for debugging, productive script shouldn't depend on mail
@@ -236,14 +244,14 @@ fi
 # assert: $FILE contains a single IPv4 or IPv6 adresses or range in each line
 
 # remove /32 and /128 prefix for IPv4 Hosts (will bog split in ranges and hosts later)
-sed -i -E -e 's/^(([0-9]{1,3}[\.]){3}[0-9]{1,3})\/32$/\1/' "${FILE}"
+sed -i -E -e "s/^(${IPV4_REGEX})\/32\$/\1/" "${FILE}"
 sed -i -E -e 's/\/128//' "${FILE}"
 
 # remove the NULL IP since ipset will trigger errexit if 0.0.0.0 appears
 sed -i -E -e '/^0\.0\.0\.0(\/[0-9]{1,2})?$/d' "${FILE}"
 
 # lines of the whitelist and blacklist file that contain a single IPv4 or IPv6 address
-LIST_IP_REGEX='^((([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}))$'
+LIST_IP_REGEX="^${IP_REGEX}\$"
 
 # add IPs from blacklist file
 if [ -s "${BLACKLIST_FILE}" ]; then
@@ -351,7 +359,7 @@ update () {
 			# Hint: don't pipe to 'head' but use 'tail' to avoid 'echo' being closed when something is still to write resulting in broken pipes
 
 			# get currently blocked IPs/ranges
-			CURRENT_ENTRIES=$(echo "$CURRENT_RULES" | grep -oE '((([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}))(/[1-9][0-9]?)?' | sort)
+			CURRENT_ENTRIES=$(echo "$CURRENT_RULES" | grep -oE "${IP_REGEX}${PREFIX_REGEX}" | sort)
 
 			### list of ips that are not considered bad any more
 			OUTDATED_ENTRIES=$(comm -13 <(echo "$FETCHED_ENTRIES") <(echo "$CURRENT_ENTRIES"))
@@ -364,7 +372,7 @@ update () {
 				"$LOGGER_BIN" $LOGGER_OPTS "Removing "$(echo "$OUTDATED_ENTRIES" | wc -l)" outdated entries from iptables for ${IPSET_FAMILY}"
 				# $FMT is a full iptables rule spec (e.g. "-D INPUT -s <ip> -j DROP ...").
 				# Replace its address by a placeholder once, then substitute each entry.
-				FMT=$(echo "$FMT" | sed -r "s!((([0-9]{1,3}[\.]){3}[0-9]{1,3})|(([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}))(/[1-9][0-9]?)?!@IP@!")
+				FMT=$(echo "$FMT" | sed -r "s!${IP_REGEX}${PREFIX_REGEX}!@IP@!")
 				while read -r IP; do
 					IPTABLES_BATCH+="${FMT/@IP@/$IP}"$'\n'
 				done <<< "$OUTDATED_ENTRIES"
