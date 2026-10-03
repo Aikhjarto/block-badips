@@ -160,8 +160,9 @@ if [ -n "$AGE_S" ]; then
 fi
 
 join_msgs () {
-	local IFS=";"
-	echo "$*" | sed 's/;/; /g'
+	local msgs
+	msgs=$(printf '%s; ' "$@")
+	echo "${msgs%; }"
 }
 
 if [ ${#CRIT_MSGS[@]} -gt 0 ]; then

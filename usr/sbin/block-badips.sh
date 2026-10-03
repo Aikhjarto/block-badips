@@ -38,8 +38,8 @@ IP4TABLES_RESTORE_BIN=/usr/sbin/iptables-restore
 IP6TABLES_RESTORE_BIN=/usr/sbin/ip6tables-restore
 LOGGER_BIN=/usr/bin/logger
 IPSET_BIN=/usr/sbin/ipset
-WHITELIST_FILE=/etc/block-badips.whitelist
-BLACKLIST_FILE=/etc/block-badips.blacklist
+WHITELIST_FILE=${BADIPS_WHITELIST_FILE:-/etc/block-badips.whitelist}
+BLACKLIST_FILE=${BADIPS_BLACKLIST_FILE:-/etc/block-badips.blacklist}
 # STATE_DIRECTORY/RUNTIME_DIRECTORY are set by systemd (StateDirectory=/RuntimeDirectory=
 # in the .service files); fall back to sensible defaults when run outside of systemd.
 STATE_DIRECTORY=${STATE_DIRECTORY:-/var/lib/block-badips}
@@ -56,21 +56,21 @@ IPSET_TYPE=hash:net
 
 type "$LOGGER_BIN"  >/dev/null 2>&1 || { echo >&2 "$LOGGER_BIN not found.  Aborting."; exit 1; }
 
-LOGGER_OPTS="-t block_badips"
+LOGGER_OPTS=(-t block_badips)
 
 if [ -n "$BADIPS_NO_STDERR" ]; then
-	LOGGER_OPTS_ERROR="$LOGGER_OPTS -p err"
-	LOGGER_OPTS_WARN="$LOGGER_OPTS -p warn"
+	LOGGER_OPTS_ERROR=("${LOGGER_OPTS[@]}" -p err)
+	LOGGER_OPTS_WARN=("${LOGGER_OPTS[@]}" -p warn)
 else
-	LOGGER_OPTS_ERROR="$LOGGER_OPTS -p err -s"
-	LOGGER_OPTS_WARN="$LOGGER_OPTS -p warn -s"
+	LOGGER_OPTS_ERROR=("${LOGGER_OPTS[@]}" -p err -s)
+	LOGGER_OPTS_WARN=("${LOGGER_OPTS[@]}" -p warn -s)
 fi
 
 # Fail fast with a clear log message instead of running into an obscure
 # error (or, with `set -o nounset`, an unbound-variable crash) deep inside
 # the script once a required binary turns out to be missing.
 for BIN in "$IPSET_BIN" "$IP4TABLES_BIN" "$IP4TABLES_SAVE_BIN" "$IP4TABLES_RESTORE_BIN" "$IP6TABLES_BIN" "$IP6TABLES_SAVE_BIN" "$IP6TABLES_RESTORE_BIN"; do
-	type "$BIN" >/dev/null 2>&1 || { "$LOGGER_BIN" $LOGGER_OPTS_ERROR "$BIN not found. Aborting."; exit 1; }
+	type "$BIN" >/dev/null 2>&1 || { "$LOGGER_BIN" "${LOGGER_OPTS_ERROR[@]}" "$BIN not found. Aborting."; exit 1; }
 done
 
 if type curl >/dev/null 2>&1; then
@@ -78,7 +78,7 @@ if type curl >/dev/null 2>&1; then
 elif type wget >/dev/null 2>&1; then
 	DOWNLOAD_PROGRAM="wget"
 else
-	"$LOGGER_BIN" $LOGGER_OPTS_ERROR "Neither curl nor wget found. Aborting."
+	"$LOGGER_BIN" "${LOGGER_OPTS_ERROR[@]}" "Neither curl nor wget found. Aborting."
 	exit 1
 fi
 
@@ -88,7 +88,7 @@ fi
 mkdir -p "$(dirname "$LOCK_FILE")"
 exec 200>"$LOCK_FILE"
 if ! flock -n 200; then
-	"$LOGGER_BIN" $LOGGER_OPTS_WARN "Another instance of $(basename "$0") is already running. Exiting."
+	"$LOGGER_BIN" "${LOGGER_OPTS_WARN[@]}" "Another instance of $(basename "$0") is already running. Exiting."
 	exit 0
 fi
 
@@ -115,7 +115,7 @@ BADIPS_MIN_PREFIX6=${BADIPS_MIN_PREFIX6:-32}
 BADIPS_MAX_SHRINK_PERCENT=${BADIPS_MAX_SHRINK_PERCENT:-50}
 for VAR in BADIPS_IPSET_MAXELEM BADIPS_MIN_PREFIX4 BADIPS_MIN_PREFIX6 BADIPS_MAX_SHRINK_PERCENT; do
 	if [[ ! "${!VAR}" =~ ^[0-9]*$ ]]; then
-		"$LOGGER_BIN" $LOGGER_OPTS_ERROR "${VAR} is \"${!VAR}\", but must be a number."
+		"$LOGGER_BIN" "${LOGGER_OPTS_ERROR[@]}" "${VAR} is \"${!VAR}\", but must be a number."
 		exit 1
 	fi
 done
@@ -132,14 +132,14 @@ LIST_ENTRY_REGEX="^${IP_REGEX}${PREFIX_REGEX}\$"
 # FILE. Returns 1 if no valid list could be fetched.
 fetch_list () {
 	if [[ -r "${URL}" ]]; then
-		"$LOGGER_BIN" $LOGGER_OPTS "Fetching list of bad IPs from file ${URL}"
+		"$LOGGER_BIN" "${LOGGER_OPTS[@]}" "Fetching list of bad IPs from file ${URL}"
 		FILE=$(mktemp -t block_badips.new.XXXXXX)
 		TMP_FILES+=("$FILE")
 		cat "${URL}" > "${FILE}"
 
 		if grep -v -q -E "${LIST_ENTRY_REGEX}" "${FILE}"; then
 			# something else than an IP or range is found
-			"$LOGGER_BIN" $LOGGER_OPTS_WARN "${URL} contained something else than a list of IP addresses and ranges"
+			"$LOGGER_BIN" "${LOGGER_OPTS_WARN[@]}" "${URL} contained something else than a list of IP addresses and ranges"
 			# uncomment mail for debugging, productive script shouldn't depend on mail
 			# mail -s "badip erronous file" root < "${FILE}"
 			date -Is >> "${STATUS_FILE}"
@@ -150,16 +150,16 @@ fetch_list () {
 		# check format of user supplied data to avoid parameter injection to curl/wget
 		regex='^(https?|ftp|file)://[-A-Za-z0-9\+&@#/%?=~_|!:,.;]*[-A-Za-z0-9\+&@#/%=~_|]'
 		if [[ ! ${URL} =~ $regex ]]; then
-			"$LOGGER_BIN" $LOGGER_OPTS_ERROR "Supplied URL \"${URL}\" is malformatted."
+			"$LOGGER_BIN" "${LOGGER_OPTS_ERROR[@]}" "Supplied URL \"${URL}\" is malformatted."
 			return 1
 		fi
 		regex=" |'"$'|\t'
 		if [[ "${BADIPS_USER}" =~ $regex ]]; then
-			"$LOGGER_BIN" $LOGGER_OPTS_ERROR "Username BADIPS_USER is \"${BADIPS_USER}\" and contains a whitespace, which is not supported."
+			"$LOGGER_BIN" "${LOGGER_OPTS_ERROR[@]}" "Username BADIPS_USER is \"${BADIPS_USER}\" and contains a whitespace, which is not supported."
 			return 1
 		fi
 		if [[ "${BADIPS_PASSWORD}" =~ $regex ]]; then
-			"$LOGGER_BIN" $LOGGER_OPTS_ERROR "Username BADIPS_PASSWORD is \"${BADIPS_PASSWORD}\" and contains a whitespace, which is not supported."
+			"$LOGGER_BIN" "${LOGGER_OPTS_ERROR[@]}" "Username BADIPS_PASSWORD is \"${BADIPS_PASSWORD}\" and contains a whitespace, which is not supported."
 			return 1
 		fi
 
@@ -188,7 +188,7 @@ fetch_list () {
 		# download IP list
 		while [ ${N_DOWNLOAD_RETRY} -gt 0 ]; do
 			### download
-			"$LOGGER_BIN" $LOGGER_OPTS "Fetching list of bad IPs from ${URL} using username \"${BADIPS_USER}\""
+			"$LOGGER_BIN" "${LOGGER_OPTS[@]}" "Fetching list of bad IPs from ${URL} using username \"${BADIPS_USER}\""
 			FILE=$(mktemp -t block_badips.new.XXXXXX)
 			TMP_FILES+=("$FILE")
 			# Try curl or wget to download.
@@ -210,11 +210,11 @@ fetch_list () {
 			ret=$?
 			set -e
 			if [ ${ret} -ne 0 ]; then
-				"$LOGGER_BIN" $LOGGER_OPTS_WARN "Download of ${URL} using ${DOWNLOAD_PROGRAM} and username \"${BADIPS_USER}\" failed with exit code ${ret} and message \"${r}\""
+				"$LOGGER_BIN" "${LOGGER_OPTS_WARN[@]}" "Download of ${URL} using ${DOWNLOAD_PROGRAM} and username \"${BADIPS_USER}\" failed with exit code ${ret} and message \"${r}\""
 				retry_later
 				continue
 			else
-				"$LOGGER_BIN" $LOGGER_OPTS "Got "$(wc -l < "$FILE" ) " lines"
+				"$LOGGER_BIN" "${LOGGER_OPTS[@]}" "Got $(wc -l < "$FILE") lines"
 			fi
 
 			### input check
@@ -223,20 +223,20 @@ fetch_list () {
 			# Hint: grep returns 1 or true if there is no match in the file
 			if [ ! -s "${FILE}" ]; then
 				# file does not exist or is empty
-				"$LOGGER_BIN" $LOGGER_OPTS_WARN "${URL} sent empty or no file"
+				"$LOGGER_BIN" "${LOGGER_OPTS_WARN[@]}" "${URL} sent empty or no file"
 				retry_later
 				continue
 			elif grep -q -i HTML "${FILE}"; then
 				# file contains HTML code
 				if grep -q "<head><title>504 Gateway Time-out</title></head>" "${FILE}"; then
-					"$LOGGER_BIN" $LOGGER_OPTS_WARN "${URL} cannot be fetched because of 504 Gateway Time-out"
+					"$LOGGER_BIN" "${LOGGER_OPTS_WARN[@]}" "${URL} cannot be fetched because of 504 Gateway Time-out"
 					echo "$(date -Is) - ERROR 504" >> "${STATUS_FILE}"
 				elif grep -q "<head><title>502 Bad Gateway</title></head>" "${FILE}"; then
-					"$LOGGER_BIN" $LOGGER_OPTS_WARN "${URL} cannot be fetched because of 502 Bad Gateway"
+					"$LOGGER_BIN" "${LOGGER_OPTS_WARN[@]}" "${URL} cannot be fetched because of 502 Bad Gateway"
 					echo "$(date -Is) - ERROR 502" >> "${STATUS_FILE}"
 				else
 					# if there was a problem, sometimes a HTML file containing an error message is sent
-					"$LOGGER_BIN" $LOGGER_OPTS_WARN "${URL} got HTML file instead of text file, see ${STATUS_FILE} for details."
+					"$LOGGER_BIN" "${LOGGER_OPTS_WARN[@]}" "${URL} got HTML file instead of text file, see ${STATUS_FILE} for details."
 					# uncomment mail for debugging, productive script shouldn't depend on mail
 					#mail -s "add badips error" root < "${FILE}"
 					date -Is >> "${STATUS_FILE}"
@@ -246,7 +246,7 @@ fetch_list () {
 				continue
 			elif grep -v -q -E "${LIST_ENTRY_REGEX}" "$FILE"; then
 				# something else than an IP or range is found
-				"$LOGGER_BIN" $LOGGER_OPTS_WARN "${URL} contained something else than a list of IP addresses and ranges"
+				"$LOGGER_BIN" "${LOGGER_OPTS_WARN[@]}" "${URL} contained something else than a list of IP addresses and ranges"
 				# uncomment mail for debugging, productive script shouldn't depend on mail
 				# mail -s "badip erronous file" root < "${FILE}"
 				date -Is >> "${STATUS_FILE}"
@@ -261,7 +261,7 @@ fetch_list () {
 
 		# quit if no valid file could be retrieved
 		if [ ${N_DOWNLOAD_RETRY} -le 0 ]; then
-			"$LOGGER_BIN" $LOGGER_OPTS_ERROR "ERROR: ${URL} does not provide list of IPs after several tries. Giving up now. Systemlog should have more information, e.g. journalctl SYSLOG_IDENTIFIER=block_badips or grep block_badips /var/log/messages"
+			"$LOGGER_BIN" "${LOGGER_OPTS_ERROR[@]}" "ERROR: ${URL} does not provide list of IPs after several tries. Giving up now. Systemlog should have more information, e.g. journalctl SYSLOG_IDENTIFIER=block_badips or grep block_badips /var/log/messages"
 			return 1
 		fi
 	fi
@@ -310,7 +310,7 @@ remove_legacy_rules () {
 		}
 		END { if (open) print "COMMIT" }')
 	if [ -n "$rules" ]; then
-		"$LOGGER_BIN" $LOGGER_OPTS "Removing $(grep -c '^-D ' <<< "$rules") rules of older versions for ${name}"
+		"$LOGGER_BIN" "${LOGGER_OPTS[@]}" "Removing $(grep -c '^-D ' <<< "$rules") rules of older versions for ${name}"
 		"$restore_bin" -w --noflush <<< "$rules"
 	fi
 }
@@ -352,7 +352,7 @@ load_set () {
 	else
 		"$IPSET_BIN" rename "$new" "$name"
 	fi
-	"$LOGGER_BIN" $LOGGER_OPTS "Loaded ${count} entries into ipset ${name} (previously ${old_count})"
+	"$LOGGER_BIN" "${LOGGER_OPTS[@]}" "Loaded ${count} entries into ipset ${name} (previously ${old_count})"
 }
 
 # update the sets and the iptables rule of one address family (4 or 6)
@@ -413,7 +413,7 @@ apply_list () {
 		}' "${FILE}" > "${FILE_TMP}"
 	mv "${FILE_TMP}" "${FILE}"
 	if [ -s "${BROAD_FILE}" ]; then
-		"$LOGGER_BIN" $LOGGER_OPTS_WARN "Ignoring $(wc -l < "${BROAD_FILE}") ranges broader than /${BADIPS_MIN_PREFIX4} (IPv4) or /${BADIPS_MIN_PREFIX6} (IPv6): $(head -n 20 "${BROAD_FILE}" | tr '\n' ' ')"
+		"$LOGGER_BIN" "${LOGGER_OPTS_WARN[@]}" "Ignoring $(wc -l < "${BROAD_FILE}") ranges broader than /${BADIPS_MIN_PREFIX4} (IPv4) or /${BADIPS_MIN_PREFIX6} (IPv6): $(head -n 20 "${BROAD_FILE}" | tr '\n' ' ')"
 	fi
 
 	# add IPs and ranges from blacklist file
@@ -447,7 +447,7 @@ apply_list () {
 # e.g. if the network is not up yet.
 CACHE_FILE="${STATE_DIRECTORY}/list"
 if [ -s "${CACHE_FILE}" ] && ! { block_rule_present 4 && block_rule_present 6; }; then
-	"$LOGGER_BIN" $LOGGER_OPTS "Applying the last valid list from ${CACHE_FILE} until the current one is fetched"
+	"$LOGGER_BIN" "${LOGGER_OPTS[@]}" "Applying the last valid list from ${CACHE_FILE} until the current one is fetched"
 	apply_list "${CACHE_FILE}"
 fi
 
@@ -461,7 +461,7 @@ if [ -s "${CACHE_FILE}" ]; then
 	N_OLD=$(wc -l < "${CACHE_FILE}")
 	N_NEW=$(wc -l < "${FILE}")
 	if [ $((N_NEW * 100)) -lt $((N_OLD * (100 - BADIPS_MAX_SHRINK_PERCENT))) ]; then
-		"$LOGGER_BIN" $LOGGER_OPTS_ERROR "Refusing the list from ${URL}, since it has only ${N_NEW} entries compared to ${N_OLD} of the last valid list. If this is expected, raise BADIPS_MAX_SHRINK_PERCENT (currently ${BADIPS_MAX_SHRINK_PERCENT}) or delete ${CACHE_FILE}."
+		"$LOGGER_BIN" "${LOGGER_OPTS_ERROR[@]}" "Refusing the list from ${URL}, since it has only ${N_NEW} entries compared to ${N_OLD} of the last valid list. If this is expected, raise BADIPS_MAX_SHRINK_PERCENT (currently ${BADIPS_MAX_SHRINK_PERCENT}) or delete ${CACHE_FILE}."
 		echo "$(date -Is) - refused list with ${N_NEW} instead of ${N_OLD} entries" >> "${STATUS_FILE}"
 		exit 1
 	fi
@@ -474,9 +474,10 @@ cp "${FILE}" "${CACHE_FILE}.new"
 mv "${CACHE_FILE}.new" "${CACHE_FILE}"
 
 ### end of script
-"$LOGGER_BIN" $LOGGER_OPTS "Finished applying block rules"
+"$LOGGER_BIN" "${LOGGER_OPTS[@]}" "Finished applying block rules"
 
 echo "$(date -Is) - updated" >> "${STATUS_FILE}"
 
 # keep just the last lines in STATUS_FILE
-echo "$(tail -1000 "${STATUS_FILE}")" > "${STATUS_FILE}"
+tail -n 1000 "${STATUS_FILE}" > "${STATUS_FILE}.new"
+mv "${STATUS_FILE}.new" "${STATUS_FILE}"
