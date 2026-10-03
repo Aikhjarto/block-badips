@@ -1,7 +1,8 @@
 [Unit]
 Description=Service for running block-badips.sh script periodically
 Documentation=https://github.com/Aikhjarto/block-badips
-After=network.target
+Wants=network-online.target
+After=network-online.target
 
 StartLimitIntervalSec=1500
 StartLimitBurst=10
@@ -11,6 +12,8 @@ Type=oneshot
 EnvironmentFile=/etc/block-badips.conf
 StateDirectory=block-badips
 RuntimeDirectory=block-badips
+# shared with the other service and holds the lock file, so do not remove it when one of them stops
+RuntimeDirectoryPreserve=yes
 ExecStart=/usr/sbin/block-badips.sh
 # downloads are retried several times, each limited to 60 seconds; this is just a safety net
 TimeoutStartSec=15min

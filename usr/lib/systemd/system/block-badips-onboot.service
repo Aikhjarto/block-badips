@@ -1,17 +1,25 @@
 [Unit]
 Description=Applies iptables rules to block known IPs doing nasty stuff
 Documentation=https://github.com/Aikhjarto/block-badips
+# restarted together with the firewall, which may flush the rules
 PartOf=SuSEfirewall2.service firewalld.service
+After=SuSEfirewall2.service firewalld.service
 # must not run in parallel to service that modify iptables without "-w"
 Before=fail2ban.service
 Before=libvirtd.service
-After=network.target
+# the download needs the network
+Wants=network-online.target
+After=network-online.target
 
 [Service]
 Type=oneshot
+# stay active, otherwise PartOf= would not restart this service with the firewall
+RemainAfterExit=yes
 EnvironmentFile=/etc/block-badips.conf
 StateDirectory=block-badips
 RuntimeDirectory=block-badips
+# shared with the other service and holds the lock file, so do not remove it when one of them stops
+RuntimeDirectoryPreserve=yes
 ExecStart=/usr/sbin/block-badips.sh
 # downloads are retried several times, each limited to 60 seconds; this is just a safety net
 TimeoutStartSec=15min
