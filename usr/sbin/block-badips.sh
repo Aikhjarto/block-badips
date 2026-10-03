@@ -111,7 +111,9 @@ BADIPS_IPSET_MAXELEM=${BADIPS_IPSET_MAXELEM:-""}
 # ranges with a shorter prefix in the downloaded list are ignored, since they would block a large part of the internet
 BADIPS_MIN_PREFIX4=${BADIPS_MIN_PREFIX4:-8}
 BADIPS_MIN_PREFIX6=${BADIPS_MIN_PREFIX6:-32}
-for VAR in BADIPS_IPSET_MAXELEM BADIPS_MIN_PREFIX4 BADIPS_MIN_PREFIX6; do
+# a list that is shorter than the last valid one by more than this percentage is refused; 100 disables the check
+BADIPS_MAX_SHRINK_PERCENT=${BADIPS_MAX_SHRINK_PERCENT:-50}
+for VAR in BADIPS_IPSET_MAXELEM BADIPS_MIN_PREFIX4 BADIPS_MIN_PREFIX6 BADIPS_MAX_SHRINK_PERCENT; do
 	if [[ ! "${!VAR}" =~ ^[0-9]*$ ]]; then
 		"$LOGGER_BIN" $LOGGER_OPTS_ERROR "${VAR} is \"${!VAR}\", but must be a number."
 		exit 1
@@ -452,6 +454,19 @@ fi
 if ! fetch_list; then
 	exit 1
 fi
+
+# A list that suddenly shrinks a lot is more likely broken than a sign that the
+# internet became a safer place. Applying it would unblock most attackers.
+if [ -s "${CACHE_FILE}" ]; then
+	N_OLD=$(wc -l < "${CACHE_FILE}")
+	N_NEW=$(wc -l < "${FILE}")
+	if [ $((N_NEW * 100)) -lt $((N_OLD * (100 - BADIPS_MAX_SHRINK_PERCENT))) ]; then
+		"$LOGGER_BIN" $LOGGER_OPTS_ERROR "Refusing the list from ${URL}, since it has only ${N_NEW} entries compared to ${N_OLD} of the last valid list. If this is expected, raise BADIPS_MAX_SHRINK_PERCENT (currently ${BADIPS_MAX_SHRINK_PERCENT}) or delete ${CACHE_FILE}."
+		echo "$(date -Is) - refused list with ${N_NEW} instead of ${N_OLD} entries" >> "${STATUS_FILE}"
+		exit 1
+	fi
+fi
+
 apply_list "${FILE}"
 
 # store the list atomically, so an interrupted run cannot leave a truncated cache behind
