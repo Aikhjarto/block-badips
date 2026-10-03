@@ -108,10 +108,15 @@ BADIPS_USER=${BADIPS_USER:-""}
 BADIPS_PASSWORD=${BADIPS_PASSWORD:-""}
 # maximum number of entries of an ipset; by default twice the number of entries, but at least 65536
 BADIPS_IPSET_MAXELEM=${BADIPS_IPSET_MAXELEM:-""}
-if [[ ! "${BADIPS_IPSET_MAXELEM}" =~ ^[0-9]*$ ]]; then
-	"$LOGGER_BIN" $LOGGER_OPTS_ERROR "BADIPS_IPSET_MAXELEM is \"${BADIPS_IPSET_MAXELEM}\", but must be a number."
-	exit 1
-fi
+# ranges with a shorter prefix in the downloaded list are ignored, since they would block a large part of the internet
+BADIPS_MIN_PREFIX4=${BADIPS_MIN_PREFIX4:-8}
+BADIPS_MIN_PREFIX6=${BADIPS_MIN_PREFIX6:-32}
+for VAR in BADIPS_IPSET_MAXELEM BADIPS_MIN_PREFIX4 BADIPS_MIN_PREFIX6; do
+	if [[ ! "${!VAR}" =~ ^[0-9]*$ ]]; then
+		"$LOGGER_BIN" $LOGGER_OPTS_ERROR "${VAR} is \"${!VAR}\", but must be a number."
+		exit 1
+	fi
+done
 
 # regular expressions for IP addresses and ranges, defined once to keep all checks consistent
 IPV4_REGEX='([0-9]{1,3}\.){3}[0-9]{1,3}'
@@ -258,8 +263,21 @@ fi
 
 # assert: $FILE contains a single IPv4 or IPv6 adresses or range in each line
 
-# remove the NULL IP
-sed -i -E -e '/^0\.0\.0\.0(\/[0-9]{1,2})?$/d' "${FILE}"
+# Ignore ranges that are too broad. A faulty list containing e.g. 0.0.0.0/1 would
+# otherwise block half of the internet, likely including the admin.
+BROAD_FILE=$(mktemp -t block_badips.broad.XXXXXX)
+FILE_TMP=$(mktemp -t block_badips.prefilter.XXXXXX)
+TMP_FILES+=("$BROAD_FILE" "$FILE_TMP")
+awk -v min4="${BADIPS_MIN_PREFIX4}" -v min6="${BADIPS_MIN_PREFIX6}" -v broad="${BROAD_FILE}" '
+	{
+		slash = index($0, "/")
+		min = index($0, ":") ? min6 : min4
+		if (slash && substr($0, slash + 1) + 0 < min) print > broad; else print
+	}' "${FILE}" > "${FILE_TMP}"
+mv "${FILE_TMP}" "${FILE}"
+if [ -s "${BROAD_FILE}" ]; then
+	"$LOGGER_BIN" $LOGGER_OPTS_WARN "Ignoring $(wc -l < "${BROAD_FILE}") ranges broader than /${BADIPS_MIN_PREFIX4} (IPv4) or /${BADIPS_MIN_PREFIX6} (IPv6): $(head -n 20 "${BROAD_FILE}" | tr '\n' ' ')"
+fi
 
 # add IPs and ranges from blacklist file
 if [ -s "${BLACKLIST_FILE}" ]; then
@@ -272,9 +290,11 @@ fi
 # also exempts them if they are part of a larger blocked range.
 ALLOW_FILE=$(mktemp -t block_badips.allow.XXXXXX)
 TMP_FILES+=("$ALLOW_FILE")
-# unroutable (local) addresses
-printf '%s\n' 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 127.0.0.0/8 \
-	fe80::/10 fec0::/10 fc00::/7 > "${ALLOW_FILE}"
+# unspecified, private, shared (CGNAT), loopback, link-local, multicast and reserved addresses
+printf '%s\n' 0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16 \
+	224.0.0.0/4 240.0.0.0/4 > "${ALLOW_FILE}"
+# unspecified, loopback, IPv4-mapped, unique local, site-local, link-local and multicast addresses
+printf '%s\n' ::/128 ::1/128 ::ffff:0:0/96 fc00::/7 fec0::/10 fe80::/10 ff00::/8 >> "${ALLOW_FILE}"
 if [ -s "${WHITELIST_FILE}" ]; then
 	grep -E "${LIST_ENTRY_REGEX}" "${WHITELIST_FILE}" >> "${ALLOW_FILE}" || true
 fi
