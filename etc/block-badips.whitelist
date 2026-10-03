@@ -1,6 +1,11 @@
-# whitelist file for block-backip
+# whitelist file for block-badips
 #
-# each IPv4 adress which is in a separate line will never be blocked by 
-# block_badips.sh, even it is on a blacklist.
+# Each IPv4 or IPv6 address which is in a separate line will never be blocked
+# by block-badips.sh, even if it is on the downloaded list or in
+# /etc/block-badips.blacklist. Ranges are not supported.
+# Lines containing anything else, like these comments, are ignored.
+#
+# Examples:
+#192.0.2.10
+#2001:db8::10
 127.0.0.1
-
