@@ -210,11 +210,22 @@ done
 
 Finally, delete the installed files and `/var/lib/block-badips`.
 
+## Bash completion
+
+`completions/check_block-badips.sh` completes the options of the plugin, also when the plugin is called by its full
+path. `completions/block-badips.sh` keeps bash from offering file names, since the script takes no arguments. The
+packages install them; otherwise copy them to bash-completion's directory:
+
+```sh
+install -D -m 0644 -t /usr/share/bash-completion/completions completions/check_block-badips.sh completions/block-badips.sh
+```
+
 ## Development
 
 `tests/run-tests.sh` tests the script and the check plugin in a new network namespace, so it doesn't touch the firewall
 of the host. It needs iptables, ipset and python3, and runs as root or, if unprivileged user namespaces are enabled, as
-a normal user. The GitHub workflow runs these tests and shellcheck on each push.
+a normal user. `python3 -m unittest discover -s tests` tests the bash completions. The GitHub workflow runs these
+tests and shellcheck on each push.
 
 ## License
 
