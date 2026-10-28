@@ -100,8 +100,13 @@ check "address within blocked range is dropped" 1 "$(dropped_packets)"
 
 ### invalid and too broad entries
 printf '%s\n' 198.51.100.1 '198.51.100.3 garbage' > "${TEST_DIR}/invalid"
-check "invalid list is rejected" 1 "$(run "${TEST_DIR}/invalid")"
+check "invalid list is ignored while the last valid list is active" 0 "$(run "${TEST_DIR}/invalid")"
 check "sets are unchanged after invalid list" 4 "$(set_count BADIP4)"
+: > "${TEST_DIR}/empty"
+check "empty list is ignored while the last valid list is active" 0 "$(run "${TEST_DIR}/empty")"
+check "sets are unchanged after empty list" 4 "$(set_count BADIP4)"
+check "rule is kept after empty list" 1 "$(iptables-save | grep -c 'comment BADIP4')"
+check "keeping the last valid list is logged" 1 "$(grep -c ' - kept last valid list$' "${BADIPS_STATUS_FILE}" | awk '{ print ($1 >= 1) }')"
 
 printf '%s\n' 198.51.100.1 198.51.100.2 203.0.113.0/24 0.0.0.0/1 2001:db8::1 2001:db8:1::/48 ::/1 > "${TEST_DIR}/broad"
 check "list with too broad ranges is accepted" 0 "$(run "${TEST_DIR}/broad")"
@@ -119,9 +124,14 @@ check "sets contain shrunk list" 41 "$(set_count BADIP4)"
 
 ### last valid list
 iptables -w -t raw -F PREROUTING
-check "failing download returns error" 1 "$(run "${TEST_DIR}/does-not-exist")"
+check "failing fetch succeeds with the last valid list" 0 "$(run "${TEST_DIR}/empty")"
 check "last valid list is applied if rule is missing" 1 "$(iptables-save | grep -c 'comment BADIP4')"
 check "set contains last valid list" 41 "$(set_count BADIP4)"
+check "malformed URL is an error despite the last valid list" 1 "$(run "${TEST_DIR}/does-not-exist")"
+check "rule is kept after malformed URL" 1 "$(iptables-save | grep -c 'comment BADIP4')"
+mv "${STATE_DIRECTORY}/list" "${TEST_DIR}/saved-list"
+check "failing fetch without last valid list returns error" 1 "$(run "${TEST_DIR}/empty")"
+mv "${TEST_DIR}/saved-list" "${STATE_DIRECTORY}/list"
 
 ### migration from older versions, which had no cache
 rm "${STATE_DIRECTORY}/list"

@@ -137,7 +137,8 @@ PREFIX_REGEX='(/[1-9][0-9]?)?'
 LIST_ENTRY_REGEX="^${IP_REGEX}${PREFIX_REGEX}\$"
 
 # Fetch the list from URL into a new temporary file, whose name is stored in
-# FILE. Returns 1 if no valid list could be fetched.
+# FILE. Returns 1 if the source sent no usable list, and 2 if the configuration
+# is invalid.
 fetch_list () {
 	if [[ -r "${URL}" ]]; then
 		"$LOGGER_BIN" "${LOGGER_OPTS[@]}" "Fetching list of bad IPs from file ${URL}"
@@ -145,7 +146,10 @@ fetch_list () {
 		TMP_FILES+=("$FILE")
 		cat "${URL}" > "${FILE}"
 
-		if grep -v -q -E "${LIST_ENTRY_REGEX}" "${FILE}"; then
+		if [ ! -s "${FILE}" ]; then
+			"$LOGGER_BIN" "${LOGGER_OPTS_WARN[@]}" "${URL} is empty"
+			return 1
+		elif grep -v -q -E "${LIST_ENTRY_REGEX}" "${FILE}"; then
 			# something else than an IP or range is found
 			"$LOGGER_BIN" "${LOGGER_OPTS_WARN[@]}" "${URL} contained something else than a list of IP addresses and ranges"
 			# uncomment mail for debugging, productive script shouldn't depend on mail
@@ -159,16 +163,16 @@ fetch_list () {
 		regex='^(https?|ftp|file)://[-A-Za-z0-9\+&@#/%?=~_|!:,.;]*[-A-Za-z0-9\+&@#/%=~_|]'
 		if [[ ! ${URL} =~ $regex ]]; then
 			"$LOGGER_BIN" "${LOGGER_OPTS_ERROR[@]}" "Supplied URL \"${URL}\" is malformatted."
-			return 1
+			return 2
 		fi
 		regex=" |'"$'|\t'
 		if [[ "${BADIPS_USER}" =~ $regex ]]; then
 			"$LOGGER_BIN" "${LOGGER_OPTS_ERROR[@]}" "Username BADIPS_USER is \"${BADIPS_USER}\" and contains a whitespace, which is not supported."
-			return 1
+			return 2
 		fi
 		if [[ "${BADIPS_PASSWORD}" =~ $regex ]]; then
 			"$LOGGER_BIN" "${LOGGER_OPTS_ERROR[@]}" "Username BADIPS_PASSWORD is \"${BADIPS_PASSWORD}\" and contains a whitespace, which is not supported."
-			return 1
+			return 2
 		fi
 
 		# Pass credentials via a netrc file instead of on the command line, where
@@ -267,9 +271,8 @@ fetch_list () {
 			fi
 		done
 
-		# quit if no valid file could be retrieved
+		# give up if no valid file could be retrieved
 		if [ ${N_DOWNLOAD_RETRY} -le 0 ]; then
-			"$LOGGER_BIN" "${LOGGER_OPTS_ERROR[@]}" "ERROR: ${URL} does not provide list of IPs after several tries. Giving up now. Systemlog should have more information, e.g. journalctl SYSLOG_IDENTIFIER=block_badips or grep block_badips /var/log/messages"
 			return 1
 		fi
 	fi
@@ -459,7 +462,19 @@ if [ -s "${CACHE_FILE}" ] && ! { block_rule_present 4 && block_rule_present 6; }
 	apply_list "${CACHE_FILE}"
 fi
 
-if ! fetch_list; then
+# If the source sends no usable list, which happens now and then, the last valid
+# list stays in effect. This is no failure as long as that list is applied; the
+# check plugin still reports if no update succeeds for too long.
+FETCH_RESULT=0
+fetch_list || FETCH_RESULT=$?
+if [ "${FETCH_RESULT}" -eq 1 ] && [ -s "${CACHE_FILE}" ] && block_rule_present 4 && block_rule_present 6; then
+	"$LOGGER_BIN" "${LOGGER_OPTS_WARN[@]}" "${URL} sent no usable list; keeping the last valid list from ${CACHE_FILE} ($(wc -l < "${CACHE_FILE}") entries, from $(date -Is -r "${CACHE_FILE}"))"
+	echo "$(date -Is) - kept last valid list" >> "${STATUS_FILE}"
+	exit 0
+elif [ "${FETCH_RESULT}" -eq 1 ]; then
+	"$LOGGER_BIN" "${LOGGER_OPTS_ERROR[@]}" "ERROR: ${URL} does not provide list of IPs after several tries and there is no last valid list to keep. Giving up now. Systemlog should have more information, e.g. journalctl SYSLOG_IDENTIFIER=block_badips or grep block_badips /var/log/messages"
+	exit 1
+elif [ "${FETCH_RESULT}" -ne 0 ]; then
 	exit 1
 fi
 
