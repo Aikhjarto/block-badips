@@ -116,9 +116,10 @@ BADIPS_USER=${BADIPS_USER:-""}
 BADIPS_PASSWORD=${BADIPS_PASSWORD:-""}
 # maximum number of entries of an ipset; by default twice the number of entries, but at least 65536
 BADIPS_IPSET_MAXELEM=${BADIPS_IPSET_MAXELEM:-""}
-# ranges with a shorter prefix in the downloaded list are ignored, since they would block a large part of the internet
+# ranges with a shorter prefix in the downloaded list are ignored, since they would block a large part of the internet;
+# IPv6: /29 is the usual size of a provider's allocation, which lists like Spamhaus DROPv6 contain on purpose
 BADIPS_MIN_PREFIX4=${BADIPS_MIN_PREFIX4:-8}
-BADIPS_MIN_PREFIX6=${BADIPS_MIN_PREFIX6:-32}
+BADIPS_MIN_PREFIX6=${BADIPS_MIN_PREFIX6:-29}
 # a list that is shorter than the last valid one by more than this percentage is refused; 100 disables the check
 BADIPS_MAX_SHRINK_PERCENT=${BADIPS_MAX_SHRINK_PERCENT:-50}
 for VAR in BADIPS_IPSET_MAXELEM BADIPS_MIN_PREFIX4 BADIPS_MIN_PREFIX6 BADIPS_MAX_SHRINK_PERCENT; do

@@ -28,7 +28,7 @@ The script logs to syslog only (identifier `block_badips`), so it is quiet when 
 
 - **Invalid lists:** if the list contains anything else than one address or range per line, e.g. an HTML error page, it
   is rejected and the firewall is left unchanged.
-- **Too broad ranges:** ranges of the downloaded list with a prefix shorter than `/8` (IPv4) or `/32` (IPv6) are
+- **Too broad ranges:** ranges of the downloaded list with a prefix shorter than `/8` (IPv4) or `/29` (IPv6) are
   ignored and logged, since an entry like `0.0.0.0/1` would block half of the internet.
 - **Shrinking lists:** a list that is more than 50 % shorter than the last valid one is refused, since it is more
   likely broken than a sign that the attacks stopped.
@@ -85,7 +85,7 @@ variables can be set in the environment. All variables are optional.
 | `BADIPS_PASSWORD`           | Password for the download. Must not contain whitespace.                                                           |                                            |
 | `BADIPS_NO_STDERR`          | If not empty, errors and warnings go to syslog only and are not printed to stderr as well.                        |                                            |
 | `BADIPS_MIN_PREFIX4`        | Ranges of the downloaded list with a shorter IPv4 prefix are ignored.                                             | `8`                                        |
-| `BADIPS_MIN_PREFIX6`        | Ranges of the downloaded list with a shorter IPv6 prefix are ignored.                                             | `32`                                       |
+| `BADIPS_MIN_PREFIX6`        | Ranges of the downloaded list with a shorter IPv6 prefix are ignored.                                             | `29`                                       |
 | `BADIPS_MAX_SHRINK_PERCENT` | A list that is shorter than the last valid one by more than this percentage is refused. `100` disables the check. | `50`                                       |
 | `BADIPS_IPSET_MAXELEM`      | Maximum number of entries of each ipset.                                                                          | twice the list's entries, at least 65536   |
 | `BADIPS_WHITELIST_FILE`     | Path of the whitelist.                                                                                            | `/etc/block-badips.whitelist`              |

@@ -108,10 +108,12 @@ check "sets are unchanged after empty list" 4 "$(set_count BADIP4)"
 check "rule is kept after empty list" 1 "$(iptables-save | grep -c 'comment BADIP4')"
 check "keeping the last valid list is logged" 1 "$(grep -c ' - kept last valid list$' "${BADIPS_STATUS_FILE}" | awk '{ print ($1 >= 1) }')"
 
-printf '%s\n' 198.51.100.1 198.51.100.2 203.0.113.0/24 0.0.0.0/1 2001:db8::1 2001:db8:1::/48 ::/1 > "${TEST_DIR}/broad"
+printf '%s\n' 198.51.100.1 198.51.100.2 203.0.113.0/24 0.0.0.0/1 2001:db8::1 2001:db8:1::/48 ::/1 3fff::/29 3fff:10::/28 > "${TEST_DIR}/broad"
 check "list with too broad ranges is accepted" 0 "$(run "${TEST_DIR}/broad")"
 check "too broad IPv4 range is ignored" 0 "$(set_entries BADIP4 | grep -c '0.0.0.0/1')"
 check "too broad IPv6 range is ignored" 0 "$(set_entries BADIP6 | grep -c '::/1')"
+check "IPv6 /29 range is blocked" 1 "$(set_entries BADIP6 | grep -c '3fff::/29')"
+check "IPv6 /28 range is ignored" 0 "$(set_entries BADIP6 | grep -c '3fff:10::/28')"
 
 ### shrinking list
 seq 1 100 | awk '{ print "198.18.0." $1 }' > "${TEST_DIR}/long"
