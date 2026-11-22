@@ -168,11 +168,11 @@ fetch_list () {
 		fi
 		regex=" |'"$'|\t'
 		if [[ "${BADIPS_USER}" =~ $regex ]]; then
-			"$LOGGER_BIN" "${LOGGER_OPTS_ERROR[@]}" "Username BADIPS_USER is \"${BADIPS_USER}\" and contains a whitespace, which is not supported."
+			"$LOGGER_BIN" "${LOGGER_OPTS_ERROR[@]}" "BADIPS_USER contains a whitespace, which is not supported."
 			return 2
 		fi
 		if [[ "${BADIPS_PASSWORD}" =~ $regex ]]; then
-			"$LOGGER_BIN" "${LOGGER_OPTS_ERROR[@]}" "Username BADIPS_PASSWORD is \"${BADIPS_PASSWORD}\" and contains a whitespace, which is not supported."
+			"$LOGGER_BIN" "${LOGGER_OPTS_ERROR[@]}" "BADIPS_PASSWORD contains a whitespace, which is not supported."
 			return 2
 		fi
 
@@ -201,7 +201,7 @@ fetch_list () {
 		# download IP list
 		while [ ${N_DOWNLOAD_RETRY} -gt 0 ]; do
 			### download
-			"$LOGGER_BIN" "${LOGGER_OPTS[@]}" "Fetching list of bad IPs from ${URL} using username \"${BADIPS_USER}\""
+			"$LOGGER_BIN" "${LOGGER_OPTS[@]}" "Fetching list of bad IPs from ${URL}"
 			FILE=$(mktemp -t block_badips.new.XXXXXX)
 			TMP_FILES+=("$FILE")
 			# Try curl or wget to download.
@@ -223,7 +223,7 @@ fetch_list () {
 			ret=$?
 			set -e
 			if [ ${ret} -ne 0 ]; then
-				"$LOGGER_BIN" "${LOGGER_OPTS_WARN[@]}" "Download of ${URL} using ${DOWNLOAD_PROGRAM} and username \"${BADIPS_USER}\" failed with exit code ${ret} and message \"${r}\""
+				"$LOGGER_BIN" "${LOGGER_OPTS_WARN[@]}" "Download of ${URL} using ${DOWNLOAD_PROGRAM} failed with exit code ${ret} and message \"${r}\""
 				retry_later
 				continue
 			else
